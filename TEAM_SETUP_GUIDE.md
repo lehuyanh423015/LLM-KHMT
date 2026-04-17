@@ -23,7 +23,7 @@ Trước khi bắt đầu, hãy đảm bảo máy tính của bạn đã cài đ
 ### Bước 1: Clone dự án
 Sử dụng Git để tải mã nguồn:
 ```bash
-git clone <url-repo-cua-nhom>
+git clone <[url-repo-cua-nhom](https://github.com/lehuyanh423015/LLM-KHMT.git)>
 cd LLM-KHMT
 ```
 
