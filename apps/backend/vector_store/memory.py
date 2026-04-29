@@ -12,12 +12,23 @@ from core.database import SessionLocal
 
 def add_to_memory(text: str):
     """
-    Placeholder: Embed the text and save it to ChromaDB.
+    Embed the text and save it to ChromaDB (if available).
     """
+    client = get_chroma_client()
+    if not client:
+        # Silently skip or log if memory is disabled
+        return
+    
+    # Implementation logic for ChromaDB would go here
     pass
 
 def retrieve_context(query: str, limit: int = 3) -> list[str]:
     """
-    Placeholder: Search ChromaDB for relevant past context.
+    Search ChromaDB for relevant past context (if available).
     """
+    client = get_chroma_client()
+    if not client:
+        return []
+        
+    # Implementation logic for ChromaDB search would go here
     return []

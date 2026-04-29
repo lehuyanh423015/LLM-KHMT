@@ -24,6 +24,8 @@ class Settings:
     ENABLE_MEMORY: bool = os.getenv("ENABLE_MEMORY", "true").lower() == "true"
     ENABLE_RECENT_CONTEXT: bool = os.getenv("ENABLE_RECENT_CONTEXT", "true").lower() == "true"
     RECENT_CONTEXT_LIMIT: int = int(os.getenv("RECENT_CONTEXT_LIMIT", "6"))
+    ENABLE_WEB_SEARCH: bool = os.getenv("ENABLE_WEB_SEARCH", "true").lower() == "true"
+    WEB_SEARCH_RESULTS: int = int(os.getenv("WEB_SEARCH_RESULTS", "5"))
     
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./app.db")
     CHROMA_PERSIST_DIR: str = os.getenv("CHROMA_PERSIST_DIR", "./chroma_data")

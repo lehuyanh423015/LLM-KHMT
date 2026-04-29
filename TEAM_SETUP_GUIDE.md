@@ -32,16 +32,17 @@ cd LLM-KHMT
 cd apps/backend
 
 # Tạo môi trường ảo
-python -m venv venv
+py -3.12 -m venv venv
 
 # Kích hoạt môi trường ảo
 # Windows:
 venv\Scripts\activate
+python -m pip install --upgrade pip setuptools wheel
 # Mac/Linux:
 # source venv/bin/activate
 
 # Cài đặt thư viện
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ### Bước 3: Thiết lập Frontend (Next.js)
