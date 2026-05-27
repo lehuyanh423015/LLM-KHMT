@@ -1,0 +1,90 @@
+[
+  {
+    "id": "laptop-asus-tuf-a15",
+    "name": "ASUS TUF Gaming A15",
+    "price": 18990000,
+    "currency": "VND",
+    "description": "Laptop gaming Ryzen 7, RTX 4050, 16GB RAM, SSD 512GB",
+    "category": "laptop",
+    "url": "https://example.com/products/asus-tuf-gaming-a15",
+    "source": "mini_catalog",
+    "tags": ["gaming", "performance", "rtx", "student"]
+  },
+  {
+    "id": "laptop-acer-aspire-7",
+    "name": "Acer Aspire 7",
+    "price": 15990000,
+    "currency": "VND",
+    "description": "Laptop hieu nang tot, phu hop hoc tap va gaming nhe",
+    "category": "laptop",
+    "url": "https://example.com/products/acer-aspire-7",
+    "source": "mini_catalog",
+    "tags": ["gaming", "performance", "student", "value"]
+  },
+  {
+    "id": "laptop-lenovo-ideapad-slim-3",
+    "name": "Lenovo IdeaPad Slim 3",
+    "price": 12990000,
+    "currency": "VND",
+    "description": "Laptop mong nhe, pin on, phu hop van phong va hoc tap",
+    "category": "laptop",
+    "url": "https://example.com/products/lenovo-ideapad-slim-3",
+    "source": "mini_catalog",
+    "tags": ["battery", "lightweight", "student", "office"]
+  },
+  {
+    "id": "phone-redmi-note-13-pro",
+    "name": "Xiaomi Redmi Note 13 Pro",
+    "price": 8990000,
+    "currency": "VND",
+    "description": "Dien thoai man hinh dep, pin tot, camera 200MP",
+    "category": "phone",
+    "url": "https://example.com/products/redmi-note-13-pro",
+    "source": "mini_catalog",
+    "tags": ["camera", "battery", "value"]
+  },
+  {
+    "id": "phone-samsung-galaxy-a55",
+    "name": "Samsung Galaxy A55",
+    "price": 11490000,
+    "currency": "VND",
+    "description": "Dien thoai can bang giua hieu nang, camera va pin",
+    "category": "phone",
+    "url": "https://example.com/products/galaxy-a55",
+    "source": "mini_catalog",
+    "tags": ["camera", "battery", "performance"]
+  },
+  {
+    "id": "tablet-ipad-10",
+    "name": "iPad 10th Gen",
+    "price": 10990000,
+    "currency": "VND",
+    "description": "May tinh bang cho hoc tap, ghi chu va giai tri",
+    "category": "tablet",
+    "url": "https://example.com/products/ipad-10th-gen",
+    "source": "mini_catalog",
+    "tags": ["student", "tablet", "entertainment"]
+  },
+  {
+    "id": "mouse-logitech-g304",
+    "name": "Logitech G304",
+    "price": 690000,
+    "currency": "VND",
+    "description": "Chuot gaming khong day, cam bien tot, pin lau",
+    "category": "mouse",
+    "url": "https://example.com/products/logitech-g304",
+    "source": "mini_catalog",
+    "tags": ["gaming", "wireless", "battery"]
+  },
+  {
+    "id": "headphones-sony-wh-ch520",
+    "name": "Sony WH-CH520",
+    "price": 1190000,
+    "currency": "VND",
+    "description": "Tai nghe bluetooth nhe, pin lau, chat am on",
+    "category": "headphones",
+    "url": "https://example.com/products/sony-wh-ch520",
+    "source": "mini_catalog",
+    "tags": ["battery", "lightweight", "wireless"]
+  }
+]
