@@ -1,28 +1,26 @@
 """
 Memory Service - Customer Memory Extraction and Update
 
-=== MEMORY LAYER (Developer B) ===
+Developer B owns the internals of this file. The stable interface is:
 
-This module handles extraction of customer preferences/memory from conversations.
+extract_and_update_customer_memory(
+    session_id: str,
+    user_message: str,
+    assistant_response: str | None,
+    db: Session
+) -> None
 
-STABLE INTERFACE:
-    extract_and_update_customer_memory(
-        session_id: str,
-        user_message: str, 
-        assistant_response: str | None,
-        db: Session
-    ) -> None
-
-The orchestrator calls this function after each turn.
-Developer B can enhance the extraction logic without changing the orchestrator.
-
-Current Implementation: Rule-based/heuristic extraction (Vietnamese + English)
-Future Enhancement: ML-based preference extraction, behavioral patterns, etc.
+This implementation is intentionally lightweight and rule-based. It normalizes
+Vietnamese accents and handles common typos such as "dien thoat" for
+"dien thoai" so memory does not keep the wrong product category.
 """
 
 import re
+import unicodedata
 from typing import Optional
+
 from sqlalchemy.orm import Session
+
 from models.database_models import CustomerProfile
 
 
@@ -30,136 +28,216 @@ def extract_and_update_customer_memory(
     session_id: str,
     user_message: str,
     assistant_response: Optional[str],
-    db: Session
+    db: Session,
 ) -> None:
-    """
-    STABLE INTERFACE FOR DEVELOPER B
-    
-    Extracts customer preferences from user message and updates memory.
-    Called asynchronously after each LLM response.
-    
-    Args:
-        session_id: Unique customer session ID
-        user_message: The user's input message
-        assistant_response: The LLM's response (for context, optional)
-        db: SQLAlchemy database session
-        
-    Returns:
-        None (updates database in-place)
-        
-    Implementation Strategy:
-    - Parse user_message for preference signals (budget, category, priorities, dislikes)
-    - Update CustomerProfile record in database
-    - Handle topic switching (product category changes)
-    - Remove conflicting preferences
-    
-    Future Enhancement Ideas:
-    - Use NLP/ML to detect implicit preferences
-    - Analyze assistant_response for feedback signals
-    - Track preference changes over time
-    - Implement preference confidence scoring
-    """
+    """Stable interface called by the chat orchestrator after each turn."""
     from core.config import settings
+
     if not settings.ENABLE_MEMORY:
         return
-    
-    # Delegate to existing implementation
+
     _extract_preferences_and_update_profile(session_id, user_message, db)
 
 
 def _extract_preferences_and_update_profile(
     session_id: str,
     user_message: str,
-    db: Session
+    db: Session,
 ) -> None:
-    """
-    Internal: Extracts preferences from user message using rule-based heuristics.
-    Updates the CustomerProfile record.
-    """
-    normalized_msg = user_message.lower()
-    
-    # Improved Heuristics Patterns (Vietnamese + English support)
-    # Extracts explicit numbers, including ranges (e.g., 10-15 triệu)
-    budget_pattern = re.search(r'(dưới|khoảng|tầm|tối đa|từ|budget.*?)?\s*(\d+[\d\.,\s\-]*\d*)\s*(triệu|tr|k|usd|vnd|million|m)', normalized_msg)
-    category_pattern = re.search(r'(laptop|điện thoại|phone|máy tính bảng|tablet|pc|chuột|mouse|bàn phím|keyboard|màn hình|kính|tai nghe|sách|truyện|novel|lightnovel|light novel|ebook|book|sách điện tử)', normalized_msg)
-    color_pattern = re.search(r'(màu\s+)?(đen|trắng|đỏ|xanh dương|xanh lá|xanh|xám|bạc|vàng|hồng|black|white|red|blue|green|gray|grey|silver|gold|pink)', normalized_msg)
-    priority_pattern = re.search(r'(hiệu năng|pin trâu|gaming|chơi game|giá rẻ|kết cấu|mỏng nhẹ|nhẹ|thiết kế|bền|camera|chụp hình|chụp ảnh|mượt|performance|battery|value|cheap|lightweight|design|durable|hay|tạo tác|tác giả|thể loại|hình ảnh|bìa sách)', normalized_msg)
-    dislike_pattern = re.search(r'(không thích|ghét|tránh|không lấy|chê|không cần|don\'t want|hate|dislike|avoid|no.*?)\s+(nặng|apple|samsung|đắt|gaming|ồn|cũ|heavy|expensive)', normalized_msg)
-    
-    # Find existing or create new profile
+    normalized_msg = _normalize_text(user_message)
+
     profile = db.query(CustomerProfile).filter(CustomerProfile.session_id == session_id).first()
     if not profile:
         profile = CustomerProfile(session_id=session_id)
         db.add(profile)
-    
-    # Detect if user has switched to a different category (topic change)
-    old_category = profile.preferred_category.lower() if profile.preferred_category else None
-    new_category = category_pattern.group(1).strip().lower() if category_pattern else None
-    
-    # If category changed, clear conflicting old preferences
-    category_changed = False
-    if new_category and old_category and new_category != old_category:
-        # Check if they're from different domains (e.g., electronics to books)
-        electronics = {'laptop', 'điện thoại', 'phone', 'máy tính bảng', 'tablet', 'pc', 'chuột', 'mouse', 'bàn phím', 'keyboard', 'màn hình', 'kính', 'tai nghe'}
-        books = {'sách', 'truyện', 'novel', 'lightnovel', 'light novel', 'ebook', 'book', 'sách điện tử'}
-        
-        old_in_electronics = old_category in electronics
-        new_in_books = new_category in books
-        old_in_books = old_category in books
-        new_in_electronics = new_category in electronics
-        
-        # If switching between different product domains, reset conflicting preferences
-        if (old_in_electronics and new_in_books) or (old_in_books and new_in_electronics):
-            category_changed = True
-            profile.budget = None
-            profile.preferred_color = None
-            profile.priorities = None
-            profile.dislikes = None
-    
-    # Update fields with absolute overwrites where appropriate to reflect newest constraints
-    if budget_pattern:
-        prefix = budget_pattern.group(1) or ""
-        amount = budget_pattern.group(2).strip()
-        unit = budget_pattern.group(3).strip()
-        profile.budget = f"{prefix} {amount} {unit}".strip()
-        
-    if category_pattern:
-        profile.preferred_category = category_pattern.group(1).strip()
-        
-    if color_pattern and not category_changed:
-        color = color_pattern.group(2) if color_pattern.group(2) else color_pattern.group(1)
-        profile.preferred_color = color.strip()
-        
-    if priority_pattern:
-        new_priority = priority_pattern.group(1).strip()
-        if profile.priorities:
-            if new_priority not in profile.priorities.lower():
-                profile.priorities = profile.priorities + f", {new_priority}"
-        else:
-            profile.priorities = new_priority
-            
-    if dislike_pattern:
-        nv = dislike_pattern.group(2).strip()
-        if profile.dislikes:
-            if nv not in profile.dislikes.lower():
-                profile.dislikes = profile.dislikes + f", {nv}"
-        else:
-            profile.dislikes = nv
-            
-    # Remove overlaps: if something is now explicitly disliked, remove it from priority
+
+    old_category = _normalize_text(profile.preferred_category) if profile.preferred_category else None
+    new_category = _detect_category(normalized_msg)
+
+    category_changed = bool(new_category and old_category and new_category != old_category)
+    if category_changed:
+        profile.preferred_color = None
+        profile.priorities = None
+        profile.dislikes = None
+
+    budget = _extract_budget(normalized_msg)
+    if budget:
+        profile.budget = budget
+
+    if new_category:
+        profile.preferred_category = new_category
+
+    color = _extract_color(normalized_msg)
+    if color and not category_changed:
+        profile.preferred_color = color
+
+    priority = _extract_priority(normalized_msg)
+    if priority:
+        profile.priorities = _append_unique(profile.priorities, priority)
+
+    dislike = _extract_dislike(normalized_msg)
+    if dislike:
+        profile.dislikes = _append_unique(profile.dislikes, dislike)
+
     if profile.dislikes and profile.priorities:
-        dislikes_list = [d.strip().lower() for d in profile.dislikes.split(",")]
-        priorities_list = [p.strip() for p in profile.priorities.split(",")]
-        new_priorities = [p for p in priorities_list if p.lower() not in dislikes_list]
-        profile.priorities = ", ".join(new_priorities) if new_priorities else None
-            
+        dislikes = {item.strip().lower() for item in profile.dislikes.split(",")}
+        priorities = [item.strip() for item in profile.priorities.split(",")]
+        kept_priorities = [item for item in priorities if item.lower() not in dislikes]
+        profile.priorities = ", ".join(kept_priorities) if kept_priorities else None
+
     db.commit()
 
 
-# LEGACY: Keep old function name for backward compatibility
+def _extract_budget(normalized_msg: str) -> Optional[str]:
+    match = re.search(
+        r"(duoi|khoang|tam|toi da|tu|budget.*?)?\s*"
+        r"(\d+[\d\.,\s\-]*\d*)\s*"
+        r"(trieu|tr|k|usd|vnd|million|m)",
+        normalized_msg,
+    )
+    if not match:
+        return None
+
+    prefix = match.group(1) or ""
+    amount = match.group(2).strip()
+    unit = match.group(3).strip()
+    return f"{prefix} {amount} {unit}".strip()
+
+
+def _detect_category(normalized_msg: str) -> Optional[str]:
+    if "laptop" in normalized_msg or "notebook" in normalized_msg:
+        return "laptop"
+    if _looks_like_laptop_work_query(normalized_msg):
+        return "laptop"
+    if _looks_like_phone_query(normalized_msg):
+        return "phone"
+    if "tablet" in normalized_msg or "may tinh bang" in normalized_msg:
+        return "tablet"
+    if "sach" in normalized_msg or "truyen" in normalized_msg or "book" in normalized_msg:
+        return "book"
+    if "tai nghe" in normalized_msg:
+        return "headphone"
+    return None
+
+
+def _extract_color(normalized_msg: str) -> Optional[str]:
+    match = re.search(
+        r"(mau\s+)?(den|trang|do|xanh duong|xanh la|xanh|xam|bac|vang|hong|"
+        r"black|white|red|blue|green|gray|grey|silver|gold|pink)",
+        normalized_msg,
+    )
+    return match.group(2).strip() if match else None
+
+
+def _extract_priority(normalized_msg: str) -> Optional[str]:
+    priorities = [
+        ("adobe", "adobe/creator"),
+        ("premiere", "video editing"),
+        ("photoshop", "photo editing"),
+        ("tac vu nang", "tac vu nang"),
+        ("do hoa", "do hoa"),
+        ("van phong", "van phong"),
+        ("hieu nang", "hieu nang"),
+        ("choi game", "choi game"),
+        ("gaming", "gaming"),
+        ("pin trau", "pin trau"),
+        ("battery", "battery"),
+        ("gia re", "gia re"),
+        ("mong nhe", "mong nhe"),
+        ("nhe", "nhe"),
+        ("ben", "ben"),
+        ("camera", "camera"),
+        ("muot", "muot"),
+        ("performance", "performance"),
+        ("lightweight", "lightweight"),
+        ("durable", "durable"),
+    ]
+    for keyword, label in priorities:
+        if keyword in normalized_msg:
+            return label
+    return None
+
+
+def _extract_dislike(normalized_msg: str) -> Optional[str]:
+    if not any(term in normalized_msg for term in ["khong thich", "ghet", "tranh", "khong lay", "khong can", "avoid", "hate", "dislike"]):
+        return None
+
+    dislike_targets = ["nang", "apple", "samsung", "xiaomi", "dat", "gaming", "on", "cu", "heavy", "expensive"]
+    for target in dislike_targets:
+        if target in normalized_msg:
+            return target
+    return None
+
+
+def _append_unique(current: Optional[str], value: str) -> str:
+    if not current:
+        return value
+
+    items = [item.strip() for item in current.split(",") if item.strip()]
+    if value.lower() not in {item.lower() for item in items}:
+        items.append(value)
+    return ", ".join(items)
+
+
+def _looks_like_phone_query(normalized_msg: str) -> bool:
+    if any(term in normalized_msg for term in ["dien thoai", "phone", "smartphone"]):
+        return True
+
+    tokens = re.findall(r"[a-z0-9]+", normalized_msg)
+    if "dien" not in tokens:
+        return False
+
+    phone_like_tokens = {"thoai", "thoat", "thoa", "dt", "dienthoai"}
+    if any(token in phone_like_tokens for token in tokens):
+        return True
+
+    return any(_edit_distance_at_most_one(token, "thoai") for token in tokens)
+
+
+def _looks_like_laptop_work_query(normalized_msg: str) -> bool:
+    work_terms = [
+        "van phong", "adobe", "premiere", "photoshop", "do hoa",
+        "edit video", "render", "tac vu nang", "lap trinh", "may tinh",
+    ]
+    if any(term in normalized_msg for term in work_terms):
+        return True
+
+    tokens = set(re.findall(r"[a-z0-9]+", normalized_msg))
+    return "may" in tokens and bool(tokens & {"adobe", "premiere", "photoshop", "render"})
+
+
+def _edit_distance_at_most_one(value: str, target: str) -> bool:
+    if value == target:
+        return True
+    if abs(len(value) - len(target)) > 1:
+        return False
+
+    i = j = edits = 0
+    while i < len(value) and j < len(target):
+        if value[i] == target[j]:
+            i += 1
+            j += 1
+            continue
+        edits += 1
+        if edits > 1:
+            return False
+        if len(value) > len(target):
+            i += 1
+        elif len(value) < len(target):
+            j += 1
+        else:
+            i += 1
+            j += 1
+    return True
+
+
+def _normalize_text(value: str) -> str:
+    text = value.replace("đ", "d").replace("Đ", "D")
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return text.lower()
+
+
 def extract_and_update_memory(session_id: str, user_message: str, db: Session):
-    """
-    Deprecated: Use extract_and_update_customer_memory() instead.
-    Kept for backward compatibility with existing code.
-    """
+    """Deprecated: use extract_and_update_customer_memory()."""
     extract_and_update_customer_memory(session_id, user_message, None, db)

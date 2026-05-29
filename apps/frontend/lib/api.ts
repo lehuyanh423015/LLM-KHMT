@@ -46,13 +46,21 @@ export async function setMode(mode: "fast" | "quality") {
   return response.json();
 }
 
-export async function setExperiment(enableMemory: boolean, enableRecentContext: boolean) {
+export async function setExperiment(
+  enableMemory: boolean,
+  enableRecentContext: boolean,
+  enableProductContext: boolean
+) {
   const response = await fetch(`${API_URL}/config/experiment`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ enable_memory: enableMemory, enable_recent_context: enableRecentContext }),
+    body: JSON.stringify({
+      enable_memory: enableMemory,
+      enable_recent_context: enableRecentContext,
+      enable_product_context: enableProductContext,
+    }),
   });
   if (!response.ok) {
     throw new Error("Failed to change experiment toggles");

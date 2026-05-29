@@ -36,6 +36,7 @@ export default function Home() {
   // Experiment states
   const [enableMemory, setEnableMemory] = useState(true);
   const [enableRecentContext, setEnableRecentContext] = useState(true);
+  const [enableProductContext, setEnableProductContext] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -65,6 +66,7 @@ export default function Home() {
         if (data.experiments) {
           setEnableMemory(data.experiments.enable_memory);
           setEnableRecentContext(data.experiments.enable_recent_context);
+          setEnableProductContext(data.experiments.enable_product_context ?? false);
         }
       })
       .catch(console.error);
@@ -81,13 +83,15 @@ export default function Home() {
     }
   };
 
-  const handleToggleExperiment = async (type: 'memory' | 'context', value: boolean) => {
+  const handleToggleExperiment = async (type: 'memory' | 'context' | 'product', value: boolean) => {
     try {
       const newMemory = type === 'memory' ? value : enableMemory;
       const newContext = type === 'context' ? value : enableRecentContext;
-      const res = await setExperiment(newMemory, newContext);
+      const newProduct = type === 'product' ? value : enableProductContext;
+      const res = await setExperiment(newMemory, newContext, newProduct);
       setEnableMemory(res.experiments.enable_memory);
       setEnableRecentContext(res.experiments.enable_recent_context);
+      setEnableProductContext(res.experiments.enable_product_context ?? false);
     } catch (e) {
       console.error("Failed to toggle experiment:", e);
     }
@@ -185,6 +189,15 @@ export default function Home() {
                     className="rounded border-emerald-500 text-emerald-600 focus:ring-emerald-500 bg-transparent"
                   />
                   <span>Enable Conversational Context</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enableProductContext}
+                    onChange={(e) => handleToggleExperiment('product', e.target.checked)}
+                    className="rounded border-emerald-500 text-emerald-600 focus:ring-emerald-500 bg-transparent"
+                  />
+                  <span>Enable Product Context</span>
                 </label>
               </div>
             </div>
