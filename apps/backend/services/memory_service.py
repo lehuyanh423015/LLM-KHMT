@@ -1,27 +1,92 @@
 """
-Memory Service - Customer Memory Extraction and Update
+Memory Service - Customer Memory Extraction and Update.
 
-Developer B owns the internals of this file. The stable interface is:
+Developer B owns the extraction rules behind this stable interface:
+    extract_and_update_customer_memory(session_id, user_message, assistant_response, db)
 
-extract_and_update_customer_memory(
-    session_id: str,
-    user_message: str,
-    assistant_response: str | None,
-    db: Session
-) -> None
-
-This implementation is intentionally lightweight and rule-based. It normalizes
-Vietnamese accents and handles common typos such as "dien thoat" for
-"dien thoai" so memory does not keep the wrong product category.
+The orchestrator depends only on that interface. Keep this file independent from
+routes and LLM provider code so Knowledge + Memory work can evolve safely.
 """
 
+from __future__ import annotations
+
 import re
-import unicodedata
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from core.config import settings
 from models.database_models import CustomerProfile
+from services.data_normalization import (
+    normalize_text,
+    parse_budget_to_vnd,
+    repair_mojibake,
+    unique_preserve_order,
+)
+
+
+CATEGORY_ALIASES = {
+    "laptop": [
+        "laptop",
+        "may tinh",
+        "may tinh xach tay",
+        "notebook",
+        "macbook",
+        "adobe",
+        "premiere",
+        "photoshop",
+        "do hoa",
+        "render",
+        "lap trinh",
+        "van phong",
+        "tac vu nang",
+    ],
+    "phone": ["dien thoai", "dien thoat", "smartphone", "phone", "mobile", "iphone", "dt"],
+    "tablet": ["may tinh bang", "tablet", "ipad"],
+    "mouse": ["chuot", "mouse"],
+    "keyboard": ["ban phim", "keyboard"],
+    "monitor": ["man hinh", "monitor"],
+    "headphones": ["tai nghe", "headphone", "headphones", "earbud", "earbuds"],
+    "book": ["sach giay", "sach dien tu", "truyen", "novel", "ebook", "book"],
+}
+
+PRIORITY_ALIASES = {
+    "gaming": ["gaming", "choi game", "game", "chien game"],
+    "battery": ["pin trau", "pin lau", "pin", "battery"],
+    "camera": ["camera", "chup anh", "chup hinh"],
+    "performance": ["hieu nang", "manh", "nhanh", "muot", "performance"],
+    "lightweight": ["mong nhe", "nhe", "mong", "gon", "lightweight"],
+    "durable": ["ben", "chac", "durable"],
+    "value": ["gia re", "re", "hop ly", "value", "cheap"],
+    "design": ["thiet ke", "dep", "design"],
+    "creator": ["adobe", "premiere", "photoshop", "do hoa", "render", "edit video"],
+    "office": ["van phong", "office", "hoc tap", "sinh vien"],
+}
+
+COLOR_ALIASES = {
+    "den": ["den", "black"],
+    "trang": ["trang", "white"],
+    "do": ["do", "red"],
+    "xanh": ["xanh duong", "xanh la", "xanh", "blue", "green"],
+    "xam": ["xam", "gray", "grey"],
+    "bac": ["bac", "silver"],
+    "vang": ["vang", "gold"],
+    "hong": ["hong", "pink"],
+}
+
+DISLIKE_MARKERS = [
+    "khong thich",
+    "ghet",
+    "tranh",
+    "khong lay",
+    "khong can",
+    "avoid",
+    "hate",
+    "dislike",
+    "dont want",
+    "don't want",
+    "no ",
+]
 
 
 def extract_and_update_customer_memory(
@@ -30,10 +95,9 @@ def extract_and_update_customer_memory(
     assistant_response: Optional[str],
     db: Session,
 ) -> None:
-    """Stable interface called by the chat orchestrator after each turn."""
-    from core.config import settings
+    """Stable interface called by the chat orchestrator after each user turn."""
 
-    if not settings.ENABLE_MEMORY:
+    if not settings.ENABLE_MEMORY or not user_message:
         return
 
     _extract_preferences_and_update_profile(session_id, user_message, db)
@@ -44,146 +108,144 @@ def _extract_preferences_and_update_profile(
     user_message: str,
     db: Session,
 ) -> None:
-    normalized_msg = _normalize_text(user_message)
+    normalized = normalize_text(user_message)
+    if not normalized:
+        return
 
-    profile = db.query(CustomerProfile).filter(CustomerProfile.session_id == session_id).first()
+    profile = db.query(CustomerProfile).filter(
+        CustomerProfile.session_id == session_id
+    ).first()
     if not profile:
         profile = CustomerProfile(session_id=session_id)
         db.add(profile)
 
-    old_category = _normalize_text(profile.preferred_category) if profile.preferred_category else None
-    new_category = _detect_category(normalized_msg)
+    old_category = normalize_text(getattr(profile, "preferred_category", None))
+    new_category = _extract_category(normalized)
+    category_changed = bool(old_category and new_category and old_category != new_category)
 
-    category_changed = bool(new_category and old_category and new_category != old_category)
     if category_changed:
         profile.preferred_color = None
         profile.priorities = None
         profile.dislikes = None
+        if _is_cross_domain_change(old_category, new_category):
+            profile.budget = None
 
-    budget = _extract_budget(normalized_msg)
-    if budget:
-        profile.budget = budget
+    budget_text = _extract_budget_text(user_message)
+    if budget_text:
+        profile.budget = budget_text
+    elif parse_budget_to_vnd(user_message) is not None:
+        profile.budget = repair_mojibake(user_message).strip()
 
     if new_category:
         profile.preferred_category = new_category
 
-    color = _extract_color(normalized_msg)
+    color = _extract_color(normalized)
     if color and not category_changed:
         profile.preferred_color = color
 
-    priority = _extract_priority(normalized_msg)
-    if priority:
-        profile.priorities = _append_unique(profile.priorities, priority)
+    priorities = _extract_priorities(normalized)
+    if priorities:
+        profile.priorities = _merge_csv(profile.priorities, priorities)
 
-    dislike = _extract_dislike(normalized_msg)
-    if dislike:
-        profile.dislikes = _append_unique(profile.dislikes, dislike)
-
-    if profile.dislikes and profile.priorities:
-        dislikes = {item.strip().lower() for item in profile.dislikes.split(",")}
-        priorities = [item.strip() for item in profile.priorities.split(",")]
-        kept_priorities = [item for item in priorities if item.lower() not in dislikes]
-        profile.priorities = ", ".join(kept_priorities) if kept_priorities else None
+    dislikes = _extract_dislikes(normalized)
+    if dislikes:
+        profile.dislikes = _merge_csv(profile.dislikes, dislikes)
+        profile.priorities = _remove_csv_items(profile.priorities, dislikes)
 
     db.commit()
 
 
-def _extract_budget(normalized_msg: str) -> Optional[str]:
+def _extract_budget_text(text: str) -> Optional[str]:
+    repaired = repair_mojibake(text)
+    normalized = normalize_text(repaired)
     match = re.search(
-        r"(duoi|khoang|tam|toi da|tu|budget.*?)?\s*"
-        r"(\d+[\d\.,\s\-]*\d*)\s*"
-        r"(trieu|tr|k|usd|vnd|million|m)",
-        normalized_msg,
+        r"(duoi|tren|khoang|tam|toi da|toi thieu|tu|budget)?\s*"
+        r"\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?\s*"
+        r"(trieu|tr|k|nghin|ngan|m|million|vnd|usd)",
+        normalized,
     )
-    if not match:
-        return None
-
-    prefix = match.group(1) or ""
-    amount = match.group(2).strip()
-    unit = match.group(3).strip()
-    return f"{prefix} {amount} {unit}".strip()
+    return match.group(0).strip() if match else None
 
 
-def _detect_category(normalized_msg: str) -> Optional[str]:
-    if "laptop" in normalized_msg or "notebook" in normalized_msg:
-        return "laptop"
-    if _looks_like_laptop_work_query(normalized_msg):
-        return "laptop"
-    if _looks_like_phone_query(normalized_msg):
+def _extract_category(normalized: str) -> Optional[str]:
+    if _looks_like_phone_query(normalized):
         return "phone"
-    if "tablet" in normalized_msg or "may tinh bang" in normalized_msg:
-        return "tablet"
-    if "sach" in normalized_msg or "truyen" in normalized_msg or "book" in normalized_msg:
-        return "book"
-    if "tai nghe" in normalized_msg:
-        return "headphone"
+
+    for canonical, aliases in CATEGORY_ALIASES.items():
+        if any(_contains_alias(normalized, alias) for alias in aliases):
+            return canonical
     return None
 
 
-def _extract_color(normalized_msg: str) -> Optional[str]:
-    match = re.search(
-        r"(mau\s+)?(den|trang|do|xanh duong|xanh la|xanh|xam|bac|vang|hong|"
-        r"black|white|red|blue|green|gray|grey|silver|gold|pink)",
-        normalized_msg,
+def _extract_color(normalized: str) -> Optional[str]:
+    for canonical, aliases in COLOR_ALIASES.items():
+        if any(_contains_alias(normalized, alias) for alias in aliases):
+            return canonical
+    return None
+
+
+def _extract_priorities(normalized: str) -> list[str]:
+    priorities = []
+    for canonical, aliases in PRIORITY_ALIASES.items():
+        if any(_contains_alias(normalized, alias) for alias in aliases):
+            priorities.append(canonical)
+    return priorities
+
+
+def _extract_dislikes(normalized: str) -> list[str]:
+    if not any(marker in normalized for marker in DISLIKE_MARKERS):
+        return []
+
+    disliked = []
+    for category, aliases in CATEGORY_ALIASES.items():
+        if any(_contains_alias(normalized, alias) for alias in aliases):
+            disliked.append(category)
+    for priority, aliases in PRIORITY_ALIASES.items():
+        if any(_contains_alias(normalized, alias) for alias in aliases):
+            disliked.append(priority)
+
+    brand_match = re.search(
+        r"(?:khong thich|ghet|tranh|avoid|hate|dislike|no)\s+([a-z0-9]+)",
+        normalized,
     )
-    return match.group(2).strip() if match else None
+    if brand_match:
+        disliked.append(brand_match.group(1))
+
+    return unique_preserve_order(disliked)
 
 
-def _extract_priority(normalized_msg: str) -> Optional[str]:
-    priorities = [
-        ("adobe", "adobe/creator"),
-        ("premiere", "video editing"),
-        ("photoshop", "photo editing"),
-        ("tac vu nang", "tac vu nang"),
-        ("do hoa", "do hoa"),
-        ("van phong", "van phong"),
-        ("hieu nang", "hieu nang"),
-        ("choi game", "choi game"),
-        ("gaming", "gaming"),
-        ("pin trau", "pin trau"),
-        ("battery", "battery"),
-        ("gia re", "gia re"),
-        ("mong nhe", "mong nhe"),
-        ("nhe", "nhe"),
-        ("ben", "ben"),
-        ("camera", "camera"),
-        ("muot", "muot"),
-        ("performance", "performance"),
-        ("lightweight", "lightweight"),
-        ("durable", "durable"),
-    ]
-    for keyword, label in priorities:
-        if keyword in normalized_msg:
-            return label
-    return None
+def _merge_csv(existing: Optional[str], new_values: list[str]) -> str:
+    current = [item.strip() for item in repair_mojibake(existing).split(",") if item.strip()]
+    return ", ".join(unique_preserve_order(current + new_values))
 
 
-def _extract_dislike(normalized_msg: str) -> Optional[str]:
-    if not any(term in normalized_msg for term in ["khong thich", "ghet", "tranh", "khong lay", "khong can", "avoid", "hate", "dislike"]):
-        return None
-
-    dislike_targets = ["nang", "apple", "samsung", "xiaomi", "dat", "gaming", "on", "cu", "heavy", "expensive"]
-    for target in dislike_targets:
-        if target in normalized_msg:
-            return target
-    return None
+def _remove_csv_items(existing: Optional[str], remove_values: list[str]) -> Optional[str]:
+    current = [item.strip() for item in repair_mojibake(existing).split(",") if item.strip()]
+    remove_set = {normalize_text(item) for item in remove_values}
+    kept = [item for item in current if normalize_text(item) not in remove_set]
+    return ", ".join(kept) if kept else None
 
 
-def _append_unique(current: Optional[str], value: str) -> str:
-    if not current:
-        return value
+def _is_cross_domain_change(old_category: str, new_category: str) -> bool:
+    electronics = {"laptop", "phone", "tablet", "mouse", "keyboard", "monitor", "headphones"}
+    books = {"book"}
+    return (
+        old_category in electronics
+        and new_category in books
+        or old_category in books
+        and new_category in electronics
+    )
 
-    items = [item.strip() for item in current.split(",") if item.strip()]
-    if value.lower() not in {item.lower() for item in items}:
-        items.append(value)
-    return ", ".join(items)
+
+def _contains_alias(normalized: str, alias: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", normalized) is not None
 
 
-def _looks_like_phone_query(normalized_msg: str) -> bool:
-    if any(term in normalized_msg for term in ["dien thoai", "phone", "smartphone"]):
+def _looks_like_phone_query(normalized: str) -> bool:
+    if any(term in normalized for term in ["dien thoai", "dien thoat", "phone", "smartphone", "iphone"]):
         return True
 
-    tokens = re.findall(r"[a-z0-9]+", normalized_msg)
+    tokens = re.findall(r"[a-z0-9]+", normalized)
     if "dien" not in tokens:
         return False
 
@@ -192,18 +254,6 @@ def _looks_like_phone_query(normalized_msg: str) -> bool:
         return True
 
     return any(_edit_distance_at_most_one(token, "thoai") for token in tokens)
-
-
-def _looks_like_laptop_work_query(normalized_msg: str) -> bool:
-    work_terms = [
-        "van phong", "adobe", "premiere", "photoshop", "do hoa",
-        "edit video", "render", "tac vu nang", "lap trinh", "may tinh",
-    ]
-    if any(term in normalized_msg for term in work_terms):
-        return True
-
-    tokens = set(re.findall(r"[a-z0-9]+", normalized_msg))
-    return "may" in tokens and bool(tokens & {"adobe", "premiere", "photoshop", "render"})
 
 
 def _edit_distance_at_most_one(value: str, target: str) -> bool:
@@ -231,13 +281,7 @@ def _edit_distance_at_most_one(value: str, target: str) -> bool:
     return True
 
 
-def _normalize_text(value: str) -> str:
-    text = value.replace("đ", "d").replace("Đ", "D")
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return text.lower()
-
-
 def extract_and_update_memory(session_id: str, user_message: str, db: Session):
     """Deprecated: use extract_and_update_customer_memory()."""
+
     extract_and_update_customer_memory(session_id, user_message, None, db)
