@@ -1,126 +1,77 @@
 """
 Prompt Builder Module
 
-=== CENTRAL PROMPT ASSEMBLY (Developer A) ===
+Developer A owns this file. It is the single place where LLM prompt structure
+is assembled from stable context contracts.
 
-This module centralizes ALL prompt building logic.
-All LLM prompts must go through this builder to ensure consistency.
-
-The final prompt structure is:
-1. System prompt (instructions, roles, constraints)
-2. Customer memory context (budget, preferences, dislikes)
-3. Product knowledge context (real-time product info, search results)
-4. Recent conversation messages (multi-turn context)
-5. Current user message (the new input to respond to)
-
-Developer B should NOT modify LLM provider code to inject context.
-Instead, they should enhance get_product_knowledge_context() in product_retrieval_service.py.
-
-Type Contract:
-- memory_context: str (can be empty)
-- product_context: str (can be empty)
-- recent_messages: List[Dict] with keys: "role", "content"
-- current_message: str
+Developer B should not edit provider code to inject knowledge. They should
+return formatted strings from product_retrieval_service.py or retrieval_service.py.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def build_llm_prompt(
     memory_context: str,
     product_context: str,
     recent_messages: List[Dict[str, str]],
-    current_message: str
-) -> Dict[str, str]:
+    current_message: str,
+) -> Dict[str, Any]:
     """
-    Build the final prompt structure for LLM input.
-    
-    Args:
-        memory_context: Customer profile info (budget, preferences, etc.)
-        product_context: Product/knowledge information (search results, recommendations)
-        recent_messages: Recent conversation history
-        current_message: The user's current input message
-        
-    Returns:
-        Dict with keys:
-            - "system": str, the system prompt
-            - "conversation_history": List[Dict], the recent messages
-            - "current_message": str, the current user input
+    Build provider-neutral LLM input in a fixed order:
+    1. system prompt
+    2. customer memory context
+    3. product knowledge context
+    4. recent conversation history
+    5. current user message
     """
-    
-    # Build the system prompt with all injected context
-    system_prompt = _build_system_prompt(memory_context, product_context)
-    
     return {
-        "system": system_prompt,
-        "conversation_history": recent_messages,
-        "current_message": current_message
+        "system": _build_system_prompt(memory_context, product_context),
+        "conversation_history": format_recent_messages_for_llm(recent_messages),
+        "current_message": current_message,
     }
 
 
 def _build_system_prompt(memory_context: str, product_context: str) -> str:
-    """
-    Build the comprehensive system prompt.
-    
-    This is where all context gets assembled for the LLM.
-    The order is important:
-    1. Base instructions
-    2. Customer memory
-    3. Product knowledge
-    4. Special constraints
-    
-    Developer A maintains this function.
-    Developer B should only extend product_context via product_retrieval_service.
-    """
-    
-    # BASE INSTRUCTIONS & ROLES
-    base_prompt = (
-        "Bạn là một trợ lý ảo tư vấn mua sắm CHUYÊN NGHIỆP. Năm hiện tại là 2026.\n\n"
-        "🔴 NGUYÊN TẮC VÀNG (PRIORITY RULES):\n"
-        "    1. LUÔN LUÔN ưu tiên thông tin từ INTERNET (2025-2026) hơn kiến thức cũ\n"
-        "    2. KHÔNG sử dụng dữ liệu từ trước năm 2024 nếu có thông tin mới\n"
-        "    3. LUÔN nêu rõ năm/thời gian của thông tin bạn sử dụng\n"
-        "    4. 🚫 TUYỆT ĐỐI TUÂN THỦ NGÂN SÁCH (BUDGET): KHÔNG gợi ý sản phẩm vượt quá ngân sách đã nêu\n"
-        "    5. 🚫 CHỐNG HALLUCINATION: KHÔNG TỰ BIẾN TẤU SẢN PHẨM HOẶC GIÁ\n"
-        "       - Nếu không có dữ liệu, GỬI LỜI TỪ CHỐI thay vì bịa ra\n"
-        "       - LUÔN GHI NGUỒN khi đưa ra thông tin sản phẩm/giá\n\n"
+    """Build concise shopping-assistant instructions plus optional contexts."""
+    prompt = (
+        "You are a focused shopping assistant for customer support and product advice.\n"
+        "Reply in Vietnamese. Keep answers concise, practical, and easy to compare.\n"
+        "Use customer memory when it is provided. Use product knowledge only when it is provided.\n"
+        "Do not invent exact prices, stock status, URLs, colors, versions, or product facts that are not in context.\n"
+        "Do not discuss camera, color, or accessories unless the user asks or product context includes them.\n"
+        "If no product knowledge is available, say the recommendation is general and explain what should be verified.\n"
+        "Respect the customer's stated budget, dislikes, and priorities.\n"
+        "Ask at most one follow-up question when required to make a useful recommendation.\n"
+        "Stay focused on shopping, recommendation, comparison, and customer support tasks.\n\n"
     )
-    
-    # INJECT CUSTOMER MEMORY
+
     if memory_context.strip():
-        base_prompt += f"📋 THÔNG TIN KHÁCH HÀNG (Memory):\n{memory_context}\n\n"
-    
-    # INJECT PRODUCT KNOWLEDGE
+        prompt += f"CUSTOMER MEMORY:\n{memory_context}\n\n"
+
     if product_context.strip():
-        base_prompt += f"📦 KIẾN THỨC SẢN PHẨM (Knowledge Base):\n{product_context}\n\n"
-    
-    # FINAL INSTRUCTIONS
-    base_prompt += (
-        "📝 HƯỚNG DẪN PHẢN HỒI:\n"
-        "    - Trả lời bằng Tiếng Việt, rõ ràng, tự nhiên\n"
-        "    - Nếu người dùng hỏi về sản phẩm, tham khảo THÔNG TIN KHÁCH HÀNG + KIẾN THỨC SẢN PHẨM\n"
-        "    - Luôn lấy ý kiến của khách hàng trước khi gợi ý\n"
-        "    - Giải thích lý do tại sao sản phẩm phù hợp với nhu cầu họ\n"
+        prompt += f"PRODUCT KNOWLEDGE CONTEXT:\n{product_context}\n\n"
+
+    prompt += (
+        "Response style:\n"
+        "- Keep the answer under 180 Vietnamese words unless the user asks for more.\n"
+        "- Start with the most useful answer first.\n"
+        "- If product context contains candidates, recommend 3 to 4 concrete options from that context only.\n"
+        "- For each option, use this format: name - price range - fit reason - trade-off - verify price/warranty/stock.\n"
+        "- Explain why each suggestion fits the customer.\n"
+        "- Separate confirmed context from general advice.\n"
     )
-    
-    return base_prompt
+    return prompt
 
 
-def format_recent_messages_for_llm(recent_messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """
-    Format recent messages into LLM-compatible format.
-    
-    Args:
-        recent_messages: List of {"role": "user"|"assistant", "content": "..."} dicts
-        
-    Returns:
-        Same format, validated and cleaned
-    """
+def format_recent_messages_for_llm(
+    recent_messages: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """Validate recent messages into the shared role/content contract."""
     formatted = []
-    for msg in recent_messages:
-        if "role" in msg and "content" in msg:
-            formatted.append({
-                "role": msg["role"],
-                "content": str(msg["content"]).strip()
-            })
+    for msg in recent_messages or []:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role in {"user", "assistant"} and content:
+            formatted.append({"role": role, "content": str(content).strip()})
     return formatted

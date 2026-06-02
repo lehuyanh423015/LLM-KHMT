@@ -55,7 +55,10 @@ async def health_check():
         "quality_model_exists": False,
         "experiments": {
             "enable_memory": settings.ENABLE_MEMORY,
-            "enable_recent_context": settings.ENABLE_RECENT_CONTEXT
+            "enable_recent_context": settings.ENABLE_RECENT_CONTEXT,
+            "enable_product_context": settings.ENABLE_PRODUCT_CONTEXT,
+            "enable_grounded_product_answer": settings.ENABLE_GROUNDED_PRODUCT_ANSWER,
+            "enable_external_product_search": settings.ENABLE_EXTERNAL_PRODUCT_SEARCH,
         }
     }
 
@@ -99,7 +102,16 @@ async def change_experiment(request: ExperimentRequest):
     """Runtime override to toggle experiment features."""
     settings.ENABLE_MEMORY = request.enable_memory
     settings.ENABLE_RECENT_CONTEXT = request.enable_recent_context
-    return {"status": "ok", "experiments": {"enable_memory": settings.ENABLE_MEMORY, "enable_recent_context": settings.ENABLE_RECENT_CONTEXT}}
+    if request.enable_product_context is not None:
+        settings.ENABLE_PRODUCT_CONTEXT = request.enable_product_context
+    return {
+        "status": "ok",
+        "experiments": {
+            "enable_memory": settings.ENABLE_MEMORY,
+            "enable_recent_context": settings.ENABLE_RECENT_CONTEXT,
+            "enable_product_context": settings.ENABLE_PRODUCT_CONTEXT,
+        },
+    }
 
 @app.get("/customer-profile/{session_id}", response_model=CustomerProfileResponse)
 async def get_customer_profile(session_id: str, db: Session = Depends(get_db)):
