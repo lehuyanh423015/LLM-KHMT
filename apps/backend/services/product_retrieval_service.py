@@ -14,6 +14,7 @@ import json
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from urllib.parse import quote_plus
 
 from duckduckgo_search import DDGS
 from sqlalchemy.orm import Session
@@ -83,6 +84,9 @@ def get_product_knowledge_context(
     """Return prompt-safe product context, or an empty string if nothing is reliable."""
 
     retrieval = _retrieve_products(user_message, session_id, db)
+    if retrieval.get("needs_clarification"):
+        return retrieval.get("clarification", "")
+
     candidates = retrieval.get("candidates", [])
     if not candidates:
         return ""
@@ -104,6 +108,9 @@ def get_grounded_product_answer(
     """
 
     retrieval = _retrieve_products(user_message, session_id, db)
+    if retrieval.get("needs_clarification"):
+        return retrieval.get("clarification", "")
+
     candidates = retrieval.get("candidates", [])
     if not candidates:
         return ""
@@ -115,9 +122,13 @@ def get_grounded_product_answer(
 
     lines = [_answer_heading(category, query_tags) + ":"]
 
-    fits = [item for item in candidates if item.get("budget_status") == "fits"]
-    maybe = [item for item in candidates if item.get("budget_status") == "maybe"]
-    unknown = [item for item in candidates if item.get("budget_status") == "unknown"]
+    best_pick = candidates[0]
+    lines.extend(_format_best_pick(best_pick, budget_max, query_tags))
+
+    remaining = candidates[1:]
+    fits = [item for item in remaining if item.get("budget_status") == "fits"]
+    maybe = [item for item in remaining if item.get("budget_status") == "maybe"]
+    unknown = [item for item in remaining if item.get("budget_status") == "unknown"]
 
     if budget_max and not fits and maybe:
         lines.append(
@@ -126,7 +137,7 @@ def get_grounded_product_answer(
         )
 
     if fits:
-        lines.extend(_format_candidate_group("Phù hợp ngân sách", fits, quality_mode))
+        lines.extend(_format_candidate_group("Phương án thay thế phù hợp ngân sách", fits, quality_mode))
     if maybe:
         lines.extend(_format_candidate_group("Có thể cân nhắc nếu săn sale/chọn cấu hình thấp", maybe, quality_mode))
     if unknown:
@@ -184,7 +195,7 @@ def search_product_database(
     if budget_max is not None:
         products = filter_by_budget(products, budget_max)
 
-    return products[:8]
+    return products[:24]
 
 
 def filter_by_budget(products: List[Dict], budget_max: float) -> List[Dict]:
@@ -221,15 +232,14 @@ def format_products_for_llm(products: List[Dict]) -> str:
         currency = product.get("currency", "VND")
         description = product.get("description", "")
         source = product.get("source", "")
-        url = product.get("url", "")
+        url = _source_url_for_item(product)
 
         line = f"{index}. {name} - {price} {currency}"
         if description:
             line += f" - {description}"
         if source:
             line += f" - Nguon: {source}"
-        if url:
-            line += f" - Link: {url}"
+        line += f" - Link kiem tra: {url}"
         lines.append(line)
 
     return "\n".join(lines)
@@ -252,7 +262,9 @@ def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
     ).first()
 
     keywords = extract_product_keywords(user_message)
-    category = _resolve_category(user_message, keywords, profile.preferred_category if profile else None)
+    direct_category = _detect_category_from_text(normalize_text(user_message))
+    preferred_category = profile.preferred_category if profile else None
+    category = _resolve_category(user_message, keywords, preferred_category)
     priorities = _extract_priorities(keywords, profile.priorities if profile else None)
     dislikes = _extract_dislikes(getattr(profile, "dislikes", None) if profile else None)
 
@@ -260,10 +272,24 @@ def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
     memory_budget = parse_budget(profile.budget) if profile and profile.budget else None
     budget_max = query_budget if query_budget is not None else memory_budget
 
+    if _needs_category_clarification(user_message, direct_category, preferred_category, priorities):
+        return {
+            "needs_clarification": True,
+            "clarification": _build_category_clarification(budget_max, priorities),
+            "candidates": [],
+        }
+
     products = search_product_database(keywords=keywords, budget_max=None, category=category)
     products = _drop_disliked_products(products, dislikes)
     products = _apply_context_scoring(products, keywords, category, priorities)
     candidates = _with_budget_status(products, budget_max)
+    candidates.sort(
+        key=lambda item: (
+            item.get("budget_rank", 0),
+            item.get("relevance_score", 0.0),
+        ),
+        reverse=True,
+    )
     candidates = _visible_candidates(candidates, budget_max)
 
     if _should_use_external_search(user_message, candidates):
@@ -493,9 +519,12 @@ def _apply_context_scoring(
         score += _score_product(product, keywords, category)
 
         haystack = _product_haystack(product)
+        tags = {normalize_text(tag) for tag in product.get("tags", [])}
         for priority in priorities:
-            if any(token in haystack for token in PRIORITY_KEYWORDS.get(priority, set())):
-                score += 1.0
+            if priority in tags:
+                score += 2.0
+            elif any(token in haystack for token in PRIORITY_KEYWORDS.get(priority, set())):
+                score += 0.5
 
         product["relevance_score"] = score
 
@@ -518,8 +547,10 @@ def _score_product(product: Dict, keywords: Iterable[str], category: Optional[st
         if keyword in CATEGORY_KEYWORDS and keyword == product_category:
             score += 2.0
         elif keyword in PRIORITY_KEYWORDS:
-            if keyword in tags or any(token in haystack for token in PRIORITY_KEYWORDS[keyword]):
-                score += 1.5
+            if keyword in tags:
+                score += 2.5
+            elif any(token in haystack for token in PRIORITY_KEYWORDS[keyword]):
+                score += 0.8
         elif keyword in haystack or keyword in tags:
             score += 0.7
 
@@ -531,6 +562,8 @@ def _with_budget_status(products: List[Dict], budget_max: Optional[float]) -> Li
     for product in products:
         item = dict(product)
         item["budget_status"], item["budget_rank"] = _budget_status(item, budget_max)
+        item["relevance_score"] = float(item.get("relevance_score", 0.0) or 0.0)
+        item["relevance_score"] += _budget_fit_score(item, budget_max)
         output.append(item)
     return output
 
@@ -564,6 +597,34 @@ def _visible_candidates(candidates: List[Dict], budget_max: Optional[float]) -> 
     if maybe:
         return (maybe + unknown)[:5]
     return unknown[:3]
+
+
+def _budget_fit_score(product: Dict, budget_max: Optional[float]) -> float:
+    """Prefer stronger products near the user's budget instead of always the cheapest fit."""
+
+    if not budget_max:
+        return 0.0
+
+    try:
+        price = float(product.get("price"))
+    except (TypeError, ValueError):
+        return 0.0
+
+    if price <= 0 or price > budget_max * 1.15:
+        return 0.0
+
+    tags = {normalize_text(tag) for tag in product.get("tags", [])}
+    target_ratio = min(price / budget_max, 1.0)
+    score = target_ratio * 2.8
+
+    if "gaming" in tags or "performance" in tags:
+        score += target_ratio * 0.8
+    if "gaming" in tags:
+        score += 0.8
+    if budget_max >= 20_000_000 and "premium" in tags:
+        score += target_ratio * 1.4
+
+    return score
 
 
 def _should_use_external_search(user_message: str, internal_candidates: List[Dict]) -> bool:
@@ -647,24 +708,161 @@ def _build_external_query(user_message: str, category: Optional[str], budget_max
 
 def _format_candidate_group(title: str, candidates: List[Dict], quality_mode: bool) -> List[str]:
     lines = [f"\n{title}:"]
-    for index, item in enumerate(candidates, 1):
+    for index, item in enumerate(candidates[:4], 1):
         source = item.get("source", "product_search")
         price = format_vnd(item.get("price")) if item.get("price") is not None else "chua ro gia"
         description = item.get("description", "")
-        url = item.get("url", "")
+        url = _source_url_for_item(item)
         if quality_mode:
             lines.append(
                 f"{index}. {item.get('name', 'Unknown')} - {price} [{source}]\n"
-                f"   - Phu hop: {description}\n"
-                f"   - Can kiem tra: gia hien tai, cau hinh dung ma, bao hanh.\n"
-                f"   - Nguon: {url or source}."
+                f"   - Phù hợp: {description}\n"
+                f"   - Vai trò: {_role_summary(item)}\n"
+                f"   - Cần kiểm tra: giá hiện tại, cấu hình đúng mã, bảo hành.\n"
+                f"   - Link kiểm tra: {url}."
             )
         else:
             lines.append(
                 f"{index}. {item.get('name', 'Unknown')} - {price} [{source}]: {description}. "
-                "Can kiem tra gia/cau hinh thuc te."
+                "Cần kiểm tra giá/cấu hình thực tế."
             )
     return lines
+
+
+def _format_best_pick(
+    item: Dict,
+    budget_max: Optional[float],
+    query_tags: set,
+) -> List[str]:
+    price = format_vnd(item.get("price")) if item.get("price") is not None else "chưa rõ giá"
+    tags = {normalize_text(tag) for tag in item.get("tags", [])}
+    reasons = []
+
+    if budget_max and item.get("price") is not None:
+        try:
+            price_value = float(item.get("price"))
+            if price_value <= budget_max:
+                reasons.append(f"nằm trong ngân sách {format_vnd(budget_max)}")
+            elif price_value <= budget_max * 1.15:
+                reasons.append("có thể chạm ngân sách nếu chọn cấu hình thấp hoặc săn sale")
+        except (TypeError, ValueError):
+            pass
+
+    matched_tags = sorted((query_tags & tags) - {"phone", "laptop"})
+    if matched_tags:
+        reasons.append("khớp nhu cầu " + ", ".join(matched_tags))
+
+    if not reasons:
+        reasons.append("có điểm phù hợp cao nhất trong dữ liệu hiện có")
+
+    lines = [
+        "",
+        f"Lựa chọn phù hợp nhất: {item.get('name', 'Unknown')} - {price}",
+        f"- Vì sao: {', '.join(reasons)}.",
+        f"- Mô tả: {item.get('description', '')}",
+        f"- Không nên chọn nếu: {_avoid_summary(item, query_tags)}",
+        f"- Link kiểm tra: {_source_url_for_item(item)}",
+        f"- Lưu ý: đây là dữ liệu demo/nội bộ; nên kiểm tra lại giá, cấu hình đúng mã và bảo hành trước khi mua.",
+    ]
+    return lines
+
+
+def _source_url_for_item(item: Dict) -> str:
+    """
+    Return a user-clickable verification URL.
+
+    Demo catalog rows may not have exact retailer URLs. In that case we return
+    a search URL instead of exposing fake example.com links as if they were
+    product pages.
+    """
+
+    url = str(item.get("url") or "").strip()
+    if url and "example.com/products" not in url:
+        return url
+
+    name = str(item.get("name") or "san pham").strip()
+    category = str(item.get("category") or "").strip()
+    query = f"{name} {category} giá Việt Nam review"
+    return f"https://www.google.com/search?q={quote_plus(query)}"
+
+
+def _needs_category_clarification(
+    user_message: str,
+    direct_category: Optional[str],
+    preferred_category: Optional[str],
+    priorities: List[str],
+) -> bool:
+    if direct_category or preferred_category:
+        return False
+
+    normalized = normalize_text(user_message)
+    has_buying_signal = any(
+        term in normalized
+        for term in ["mua", "goi y", "tu van", "chon", "nen mua", "duoi", "tam", "khoang"]
+    )
+    has_generic_machine = any(term in normalized for term in ["may", "san pham", "thiet bi"])
+    has_product_intent = bool(priorities) or parse_budget(user_message) is not None
+    return has_buying_signal and has_generic_machine and has_product_intent
+
+
+def _build_category_clarification(
+    budget_max: Optional[float],
+    priorities: List[str],
+) -> str:
+    budget_text = f" với ngân sách khoảng {format_vnd(budget_max)}" if budget_max else ""
+    priority_text = f" và nhu cầu {', '.join(priorities)}" if priorities else ""
+    return (
+        f"Bạn đang muốn mua điện thoại hay laptop{budget_text}{priority_text}? "
+        "Hai nhóm này có tiêu chí rất khác nhau: điện thoại ưu tiên chipset, pin, camera và tản nhiệt; "
+        "laptop ưu tiên CPU, GPU, RAM, màn hình và tản nhiệt. "
+        "Bạn xác nhận loại sản phẩm trước, rồi tôi sẽ gợi ý mẫu phù hợp nhất."
+    )
+
+
+def _avoid_summary(item: Dict, query_tags: set) -> str:
+    tags = {normalize_text(tag) for tag in item.get("tags", [])}
+    category = normalize_text(item.get("category"))
+
+    if category == "phone":
+        if "gaming" in query_tags and "gaming" not in tags:
+            return "bạn ưu tiên chơi game nặng trong thời gian dài"
+        if "camera" in query_tags and "camera" not in tags:
+            return "bạn cần camera/video tốt nhất trong phân khúc"
+        if "battery" in query_tags and "battery" not in tags:
+            return "bạn ưu tiên pin trâu hơn hiệu năng/camera"
+        if "premium" in tags:
+            return "bạn muốn tối ưu hiệu năng/giá thay vì trải nghiệm cao cấp"
+        return "bạn cần thông số rất chuyên biệt chưa có trong catalog demo"
+
+    if category == "laptop":
+        if "gaming" in query_tags and "gaming" not in tags:
+            return "bạn cần chơi game nặng hoặc GPU rời mạnh"
+        if "creator" in query_tags and "creator" not in tags:
+            return "bạn dùng Premiere/Photoshop nặng hoặc render thường xuyên"
+        if "lightweight" in query_tags and "lightweight" not in tags:
+            return "bạn cần máy thật nhẹ và pin rất lâu"
+        if "gaming" in tags:
+            return "bạn ưu tiên máy mỏng nhẹ, pin lâu và ít ồn hơn hiệu năng"
+        return "bạn cần cấu hình đặc thù chưa có trong catalog demo"
+
+    return "nhu cầu của bạn khác với điểm mạnh chính của sản phẩm"
+
+
+def _role_summary(item: Dict) -> str:
+    tags = {normalize_text(tag) for tag in item.get("tags", [])}
+    if "gaming" in tags and "creator" in tags:
+        return "mạnh cho game và tác vụ đồ họa/video"
+    if "gaming" in tags:
+        return "ưu tiên chơi game/hiệu năng"
+    if "creator" in tags:
+        return "ưu tiên đồ họa, Adobe, render hoặc sáng tạo nội dung"
+    if "office" in tags:
+        return "ưu tiên học tập, văn phòng và làm việc hằng ngày"
+    if "camera" in tags:
+        return "ưu tiên camera và trải nghiệm cân bằng"
+    if "battery" in tags:
+        return "ưu tiên pin và tính ổn định"
+    return "phương án cân bằng"
 
 
 def _answer_heading(category: Optional[str], tags: set) -> str:

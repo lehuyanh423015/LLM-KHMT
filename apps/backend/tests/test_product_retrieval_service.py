@@ -47,6 +47,7 @@ if "dotenv" not in sys.modules:
 from services.product_retrieval_service import (
     extract_product_keywords,
     filter_by_budget,
+    get_grounded_product_answer,
     format_products_for_llm,
     get_product_knowledge_context,
     parse_budget,
@@ -93,7 +94,7 @@ class ProductRetrievalServiceTests(TestCase):
 
         self.assertGreater(len(results), 0)
         self.assertTrue(all(result["category"] == "laptop" for result in results))
-        self.assertTrue(any(result["name"] == "Lenovo IdeaPad Slim 3" for result in results))
+        self.assertTrue(any("gaming" in result.get("tags", []) for result in results))
 
     def test_filter_by_budget_strictly_enforces_limit(self):
         products = [
@@ -144,7 +145,7 @@ class ProductRetrievalServiceTests(TestCase):
         )
 
         self.assertIn("San pham de xuat:", context)
-        self.assertIn("Lenovo IdeaPad Slim 3", context)
+        self.assertIn("Acer Aspire 7", context)
         self.assertNotIn("ASUS TUF Gaming A15", context)
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
@@ -158,3 +159,23 @@ class ProductRetrievalServiceTests(TestCase):
         )
 
         self.assertEqual(context, "")
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_grounded_answer_asks_when_machine_category_is_ambiguous(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="toi can mua may choi game duoi 20 trieu",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("điện thoại hay laptop", answer.lower())
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_grounded_answer_includes_tradeoff_for_best_pick(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="dien thoai choi game duoi 20 trieu",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("Không nên chọn nếu", answer)
