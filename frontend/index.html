@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src https://fonts.gstatic.com https://cdnjs.cloudflare.com; connect-src 'self' http://localhost:8000 http://127.0.0.1:8000;">
+  <title>Continual AI | Học liên tục</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" type="image/x-icon" href="ai_icon.ico">
+</head>
+<body>
+  <!-- Container thông báo Uiverse (góc trên bên phải) -->
+  <div id="notificationContainer" class="notification-container"></div>
+
+  <div class="welcome-screen" id="welcomeScreen">
+    <div class="welcome-card">
+      <div class="welcome-logo"><img src="ai_icon.png" alt="AI Logo"></div>
+      <div class="welcome-title">Continual AI</div>
+      <div class="welcome-subtitle">
+        <i class="fas fa-robot"></i>
+        <span>Hệ thống hội thoại học liên tục</span>
+      </div>
+      <div class="feature-grid">
+        <div class="feature-item"><div class="feature-icon"><i class="fas fa-brain"></i></div><span class="feature-label">Không quên</span></div>
+        <div class="feature-item"><div class="feature-icon"><i class="fas fa-database"></i></div><span class="feature-label">Học từ hội thoại</span></div>
+        <div class="feature-item"><div class="feature-icon"><i class="fas fa-chart-line"></i></div><span class="feature-label">Hiệu quả cao</span></div>
+      </div>
+      <button class="start-button" id="startChatBtn"><span>Bắt đầu trò chuyện</span> <i class="fas fa-arrow-right"></i></button>
+    </div>
+  </div>
+
+  <div class="app">
+    <div class="history-sidebar" id="historySidebar">
+      <div class="sidebar-header">
+        <h3><i class="fas fa-history"></i> Lịch sử</h3>
+        <div class="new-chat-btn" id="newChatBtn"><i class="fas fa-plus"></i></div>
+      </div>
+      <div class="history-list" id="historyList"></div>
+      <div class="sidebar-footer">
+        <div class="footer-brand">
+          <img src="ai_icon.png" alt="AI Logo">
+          <span>Continual AI</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-main">
+      <div class="chat-header">
+        <div class="header-left">
+          <button class="menu-toggle" id="menuToggle"><i class="fas fa-bars"></i></button>
+          <div class="brand-area">
+            <div class="logo-symbol"><img src="ai_icon.png" alt="AI Logo"></div>
+            <div class="brand-text"><h2>Continual AI</h2></div>
+          </div>
+        </div>
+        <div class="header-actions">
+          <!-- Dropdown chọn chế độ chuyên nghiệp -->
+          <div class="mode-select-wrapper">
+            <select id="modeSelect" class="mode-select">
+              <option value="fast">⚡ Fast – Phản hồi nhanh</option>
+              <option value="quality">🎯 Quality – Chất lượng cao</option>
+            </select>
+          </div>
+          <button class="theme-toggle" id="themeToggle"><i class="fas fa-sun"></i></button>
+        </div>
+      </div>
+
+      <div class="message-thread" id="messageThread"></div>
+      <div class="attachment-preview" id="attachmentPreview"></div>
+
+      <div class="input-container">
+        <button class="attach-btn" id="attachBtn"><i class="fas fa-plus"></i></button>
+        <input type="text" id="chatInput" placeholder="Nhập tin nhắn...">
+        <button class="send-button" id="sendMessageBtn"><i class="fas fa-arrow-up"></i></button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" multiple style="display:none" accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain">
+
+  <script src="backend.js"></script>
+  <script src="frontend.js"></script>
+</body>
+</html>

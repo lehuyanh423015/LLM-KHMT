@@ -1,1 +1,0 @@
-# Routes package — API endpoints
