@@ -20,11 +20,11 @@ Response:
   "answer": "Assistant response...",
   "session_id": "session-123",
   "debug": {
-    "llm_mode": "fast",
-    "active_model": "qwen2.5:0.5b",
+    "active_model": "qwen3:4b",
+    "answer_strategy": "llm_synthesis",
     "memory_enabled": true,
     "recent_context_enabled": true,
-    "product_context_enabled": false,
+    "product_context_enabled": true,
     "recent_message_count": 4,
     "memory_context_loaded": true,
     "product_context_loaded": false
@@ -39,7 +39,6 @@ The frontend may ignore `debug`. It is included for academic experiments and dem
 Returns runtime status:
 
 - active LLM provider
-- active LLM mode
 - active Ollama model
 - Ollama reachability
 - configured model availability

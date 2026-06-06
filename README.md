@@ -33,14 +33,11 @@ A minimal, beginner-friendly starter template for building a Continual Learning 
 - pnpm (package manager for frontend)
 - [Ollama](https://ollama.com/) (For running LLMs locally)
 
-### 2. Prepare Ollama Models (Operation Modes)
-The chatbot supports two runtime modes:
-- **FAST MODE** (`qwen2.5:0.5b`): Perfect for development. Runs instantly even without a dedicated GPU.
-- **QUALITY MODE** (`qwen3:4b`): Perfect for the final academic demo. Slower, but provides much better reasoning and natural conversation.
+### 2. Prepare Ollama Model
+The chatbot uses one local Ollama model for final answer synthesis. Product facts come from memory/retrieval, not from switching between small and large models.
 
-Pull both models before starting the backend:
+Pull the synthesis model before starting the backend:
 ```bash
-ollama run qwen2.5:0.5b
 ollama run qwen3:4b
 ```
 *(You can exit the chat prompt immediately using `/bye`, as the model is now stored locally).*
@@ -50,13 +47,13 @@ In the root directory, create a `.env` file by copying the provided example:
 ```bash
 cp .env.example .env
 ```
-Open `.env`. It is pre-configured to use Ollama with `fast` mode active:
+Open `.env`. It is pre-configured to use one Ollama model for answer synthesis:
 ```ini
-LLM_MODE=fast
-OLLAMA_FAST_MODEL=qwen2.5:0.5b
-OLLAMA_QUALITY_MODEL=qwen3:4b
+OLLAMA_MODEL=qwen3:4b
+ENABLE_PRODUCT_CONTEXT=true
+ENABLE_GROUNDED_PRODUCT_ANSWER=false
 ```
-> **How to switch modes**: You can change `LLM_MODE=quality` inside `.env` to enforce high-quality generation. Or, natively click the "FAST / QUALITY" toggle button instantly inside the Frontend Browser UI toolbar!
+> Product knowledge comes from retrieval/catalog. The LLM is used to synthesize a clearer final answer from that grounded context.
 ### 4. Backend Setup
 The backend runs on Python and uses a virtual environment to manage dependencies.
 
@@ -100,7 +97,7 @@ Test if the backend is successfully connected to Ollama:
 ```bash
 curl http://localhost:8000/health
 ```
-*(Expected: returns JSON featuring `ollama_reachable: true` and `model_available_in_ollama: true`).*
+*(Expected: returns JSON featuring `ollama_reachable: true` and `configured_model_exists: true`).*
 
 ### Chat (POST `/chat`)
 Test the inference:
@@ -140,7 +137,7 @@ The backend features `ENABLE_MEMORY` and `ENABLE_RECENT_CONTEXT` environment var
 2. Watch the Debug panel. The parameters overwrite with the new Priority (`lightweight`) and explicitly removes contradicting items from past turns, registering `heavy` inside Dislikes!
 3. Future replies natively shape around this new requirement!
 
-#### Experiment C: Fast vs Quality Inference
-**Objective**: Compare latency and reasoning logic between 0.5b parameters and 4b parameters.
-1. Click the toggle at the top of the chat: `FAST (Zap)` -> `QUALITY (Star)`.
-2. Send identical questions and compare how well `qwen3:4b` respects negative constraints compared to the fast model!
+#### Experiment C: Grounded Template vs LLM Synthesis
+**Objective**: Compare deterministic retrieval output with LLM-written advice based on the same product context.
+1. Set `ENABLE_GROUNDED_PRODUCT_ANSWER=true` for the fastest template answer.
+2. Set `ENABLE_GROUNDED_PRODUCT_ANSWER=false` to let `qwen3:4b` synthesize the final response from retrieved memory/product context.

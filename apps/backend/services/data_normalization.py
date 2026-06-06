@@ -23,6 +23,10 @@ def repair_mojibake(text: object) -> str:
     if not value:
         return ""
 
+    mojibake_markers = ("Ã", "Â", "Ä", "Æ", "áº", "á»", "â€", "�")
+    if not any(marker in value for marker in mojibake_markers):
+        return value
+
     try:
         repaired = value.encode("cp1252").decode("utf-8")
     except (UnicodeEncodeError, UnicodeDecodeError):

@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Send, User, ChevronDown, ChevronUp, Zap, Star } from "lucide-react";
-import { sendMessage, fetchProfileMemory, fetchHealth, setMode, setExperiment } from "../lib/api";
+import { Send, User, ChevronDown, ChevronUp, Brain } from "lucide-react";
+import { sendMessage, fetchProfileMemory, fetchHealth, setExperiment } from "../lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -29,8 +29,7 @@ export default function Home() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   
-  // Model Mode states
-  const [activeMode, setActiveMode] = useState<"fast" | "quality">("fast");
+  // Active synthesis model reported by the backend.
   const [activeModel, setActiveModel] = useState<string>("");
   
   // Experiment states
@@ -61,7 +60,6 @@ export default function Home() {
     fetchProfileMemory(currentSession).then(setProfile).catch(console.error);
     fetchHealth()
       .then((data) => {
-        setActiveMode(data.active_mode);
         setActiveModel(data.active_model);
         if (data.experiments) {
           setEnableMemory(data.experiments.enable_memory);
@@ -71,17 +69,6 @@ export default function Home() {
       })
       .catch(console.error);
   }, []);
-
-  const handleToggleMode = async () => {
-    try {
-      const newMode = activeMode === "fast" ? "quality" : "fast";
-      const res = await setMode(newMode);
-      setActiveMode(res.active_mode);
-      setActiveModel(res.active_model);
-    } catch (e) {
-      console.error("Failed to toggle mode:", e);
-    }
-  };
 
   const handleToggleExperiment = async (type: 'memory' | 'context' | 'product', value: boolean) => {
     try {
@@ -128,18 +115,13 @@ export default function Home() {
         <h1 className="text-lg flex items-center gap-3">
           Shopping Assistant
           {activeModel && (
-            <button
-              onClick={handleToggleMode}
-              title={`Switch Mode. Currently running: ${activeModel}`}
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-md border transition-all ${
-                activeMode === "fast" 
-                  ? "bg-amber-100/50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-900/30 dark:text-amber-500 dark:border-amber-800" 
-                  : "bg-purple-100/50 text-purple-700 border-purple-200 hover:bg-purple-100 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800"
-              }`}
+            <span
+              title={`Answer synthesis model: ${activeModel}`}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-md border bg-blue-100/50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800"
             >
-              {activeMode === "fast" ? <Zap size={14} /> : <Star size={14} />}
-              {activeMode.toUpperCase()}
-            </button>
+              <Brain size={14} />
+              {activeModel}
+            </span>
           )}
         </h1>
         <div className="flex gap-2">

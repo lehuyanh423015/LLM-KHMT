@@ -74,12 +74,20 @@ class ChatOrchestrator:
                     recent_messages=recent_messages,
                 )
             except Exception as e:
-                assistant_answer = f"Xin loi, da co loi xay ra: {str(e)}"
+                assistant_answer = f"Xin lỗi, đã có lỗi xảy ra: {str(e)}"
+
+        if not assistant_answer.strip() and product_context:
+            assistant_answer = get_grounded_product_answer(
+                user_message=user_message,
+                session_id=session_id,
+                db=db,
+            )
+            grounded_answer_used = bool(assistant_answer)
 
         if not assistant_answer.strip():
             assistant_answer = (
-                "Xin loi, toi chua tao duoc cau tra loi. "
-                "Ban co the thu lai o che do FAST hoac tat QUALITY neu may chay cham."
+                "Xin lỗi, tôi chưa tạo được câu trả lời. "
+                "Bạn có thể thử lại hoặc bật grounded product answer nếu Ollama đang chạy chậm."
             )
 
         assistant_msg = self._save_assistant_message(conversation_id, assistant_answer, db)
@@ -186,8 +194,8 @@ class ChatOrchestrator:
     ) -> Dict[str, Any]:
         """Expose lightweight debug metadata for demos and experiments."""
         return {
-            "llm_mode": settings.LLM_MODE,
             "active_model": settings.active_model,
+            "answer_strategy": "grounded_template" if grounded_answer_used else "llm_synthesis",
             "memory_enabled": settings.ENABLE_MEMORY,
             "recent_context_enabled": settings.ENABLE_RECENT_CONTEXT,
             "product_context_enabled": settings.ENABLE_PRODUCT_CONTEXT,

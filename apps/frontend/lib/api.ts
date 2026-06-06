@@ -32,20 +32,6 @@ export async function fetchHealth() {
   return response.json();
 }
 
-export async function setMode(mode: "fast" | "quality") {
-  const response = await fetch(`${API_URL}/config/mode`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ mode }),
-  });
-  if (!response.ok) {
-    throw new Error("Failed to change mode");
-  }
-  return response.json();
-}
-
 export async function setExperiment(
   enableMemory: boolean,
   enableRecentContext: boolean,

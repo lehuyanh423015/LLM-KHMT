@@ -11,6 +11,37 @@ from models.database_models import CustomerProfile
 from services.data_normalization import repair_mojibake
 
 
+MEMORY_LABELS = {
+    "gaming": "chơi game",
+    "battery": "pin",
+    "camera": "camera/chụp ảnh",
+    "performance": "hiệu năng",
+    "display": "màn hình",
+    "storage": "lưu trữ",
+    "ram": "RAM/đa nhiệm",
+    "cooling": "tản nhiệt",
+    "lightweight": "mỏng nhẹ",
+    "durable": "độ bền",
+    "build_quality": "chất lượng hoàn thiện",
+    "warranty": "bảo hành/chính hãng",
+    "software": "phần mềm/cập nhật",
+    "value": "giá/cấu hình",
+    "china_brand": "ưu tiên hãng Trung Quốc",
+    "design": "thiết kế",
+    "creator": "đồ họa/Adobe/render",
+    "office": "văn phòng/học tập",
+    "coding": "lập trình",
+    "ai_work": "AI/machine learning",
+    "upgradeable": "khả năng nâng cấp",
+    "compact": "nhỏ gọn",
+    "premium": "cao cấp",
+    "android": "Android",
+    "ios": "iOS",
+    "windows": "Windows",
+    "macos": "macOS",
+}
+
+
 def get_customer_memory_context(session_id: str, db: Session) -> str:
     """
     Return a compact, formatted customer profile for prompt injection.
@@ -27,12 +58,12 @@ def get_customer_memory_context(session_id: str, db: Session) -> str:
         return ""
 
     fields = [
-        ("Ten khach hang", getattr(profile, "name", None)),
-        ("Ngan sach", getattr(profile, "budget", None)),
-        ("San pham dang tim", getattr(profile, "preferred_category", None)),
-        ("Mau sac yeu thich", getattr(profile, "preferred_color", None)),
-        ("Uu tien", getattr(profile, "priorities", None)),
-        ("Khong thich/Can tranh", getattr(profile, "dislikes", None)),
+        ("Tên khách hàng", getattr(profile, "name", None)),
+        ("Ngân sách", getattr(profile, "budget", None)),
+        ("Sản phẩm đang tìm", getattr(profile, "preferred_category", None)),
+        ("Màu sắc yêu thích", getattr(profile, "preferred_color", None)),
+        ("Ưu tiên", format_memory_csv(getattr(profile, "priorities", None))),
+        ("Không thích/Cần tránh", format_memory_csv(getattr(profile, "dislikes", None))),
     ]
 
     context_lines = []
@@ -52,5 +83,38 @@ def get_customer_context(session_id: str, db: Session) -> str:
 
     context = get_customer_memory_context(session_id, db)
     if context:
-        return "THONG TIN KHACH HANG (Bo nho):\n" + context
+        return "THÔNG TIN KHÁCH HÀNG (Bộ nhớ):\n" + context
     return ""
+
+
+def format_memory_csv(value: object) -> str:
+    raw = repair_mojibake(value).strip()
+    if not raw:
+        return ""
+
+    formatted = []
+    seen = set()
+    for item in [part.strip() for part in raw.split(",") if part.strip()]:
+        if item.startswith("brand:"):
+            label = "hãng " + item.split(":", 1)[1].title()
+        elif item.startswith("os:"):
+            label = item.split(":", 1)[1].upper()
+        else:
+            label = MEMORY_LABELS.get(item, item)
+        normalized_label = label.lower()
+        if normalized_label in seen:
+            continue
+        if normalized_label == "apple" and "hãng apple" in seen:
+            continue
+        if normalized_label == "hãng apple" and "apple" in seen:
+            formatted = [value for value in formatted if value.lower() != "apple"]
+            seen.discard("apple")
+        seen.add(normalized_label)
+        formatted.append(label)
+    return ", ".join(formatted)
+
+
+def _format_memory_csv(value: object) -> str:
+    """Backward-compatible alias."""
+
+    return format_memory_csv(value)

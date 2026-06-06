@@ -2,7 +2,7 @@
 
 Developer A owns this file. Keep it focused on provider duties:
 building Ollama-compatible messages from the central prompt builder, calling
-Ollama, and preserving model switching through settings.active_model.
+Ollama, and using the single configured synthesis model.
 
 Knowledge retrieval, web search, product search, and memory extraction belong
 behind the stable service interfaces called by chat_orchestrator.py.

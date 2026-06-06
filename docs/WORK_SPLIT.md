@@ -17,7 +17,7 @@ Responsibilities:
 
 - Keep `/chat` route thin.
 - Keep the central chat flow in `chat_orchestrator.py`.
-- Preserve Ollama model switching through `settings.active_model`.
+- Keep Ollama answer synthesis behind `settings.active_model`.
 - Keep prompt assembly centralized in `prompt_builder.py`.
 - Keep provider logic focused on LLM calls, not product search or memory extraction.
 

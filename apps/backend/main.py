@@ -11,7 +11,7 @@ import httpx
 
 from core.config import settings
 from core.database import engine, Base, get_db
-from models.schemas import CustomerProfileResponse, ModeRequest, ExperimentRequest
+from models.schemas import CustomerProfileResponse, ExperimentRequest
 from routes.chat import router as chat_router
 
 # Create all database tables on startup
@@ -48,11 +48,9 @@ async def health_check():
     status = {
         "status": "ok",
         "provider": settings.LLM_PROVIDER,
-        "active_mode": settings.LLM_MODE,
         "active_model": settings.active_model,
         "ollama_reachable": False,
-        "fast_model_exists": False,
-        "quality_model_exists": False,
+        "configured_model_exists": False,
         "experiments": {
             "enable_memory": settings.ENABLE_MEMORY,
             "enable_recent_context": settings.ENABLE_RECENT_CONTEXT,
@@ -71,31 +69,19 @@ async def health_check():
                 if res.status_code == 200:
                     status["ollama_reachable"] = True
                 
-                # 2. Check if the configured models are installed
+                # 2. Check if the configured model is installed
                 if status["ollama_reachable"]:
                     tags_res = await client.get(f"{base_url}/api/tags")
                     if tags_res.status_code == 200:
                         tags_data = tags_res.json()
                         models = [m.get("name") for m in tags_data.get("models", [])]
-                        
-                        f_model = settings.OLLAMA_FAST_MODEL
-                        q_model = settings.OLLAMA_QUALITY_MODEL
-                        
-                        if f_model in models or f"{f_model}:latest" in models:
-                            status["fast_model_exists"] = True
-                        if q_model in models or f"{q_model}:latest" in models:
-                            status["quality_model_exists"] = True
+                        model = settings.active_model
+                        status["configured_model_exists"] = model in models or f"{model}:latest" in models
                             
         except Exception as e:
             print(f"[Health Check] Could not reach Ollama at {base_url}: {e}")
 
     return status
-
-@app.post("/config/mode")
-async def change_mode(request: ModeRequest):
-    """Runtime override to toggle LLM modes."""
-    settings.LLM_MODE = request.mode
-    return {"status": "ok", "active_mode": settings.LLM_MODE, "active_model": settings.active_model}
 
 @app.post("/config/experiment")
 async def change_experiment(request: ExperimentRequest):
@@ -117,6 +103,7 @@ async def change_experiment(request: ExperimentRequest):
 async def get_customer_profile(session_id: str, db: Session = Depends(get_db)):
     """Fetch structured memory context for a given session."""
     from models.database_models import CustomerProfile
+    from services.retrieval_service import format_memory_csv
     
     profile = db.query(CustomerProfile).filter(CustomerProfile.session_id == session_id).first()
     
@@ -127,8 +114,8 @@ async def get_customer_profile(session_id: str, db: Session = Depends(get_db)):
             budget=profile.budget or "Not specified",
             preferred_category=profile.preferred_category or "Not specified",
             preferred_color=profile.preferred_color or "Not specified",
-            priorities=profile.priorities or "Not specified",
-            dislikes=profile.dislikes or "Not specified",
+            priorities=format_memory_csv(profile.priorities) or "Not specified",
+            dislikes=format_memory_csv(profile.dislikes) or "Not specified",
             updated_at=profile.updated_at.isoformat() if profile.updated_at else "Unknown"
         )
     

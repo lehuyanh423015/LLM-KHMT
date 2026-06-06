@@ -15,23 +15,22 @@ class Settings:
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     
-    # Model Operation Modes Configuration
-    LLM_MODE: str = os.getenv("LLM_MODE", "fast")
-    OLLAMA_FAST_MODEL: str = os.getenv("OLLAMA_FAST_MODEL", "qwen2.5:0.5b")
-    OLLAMA_QUALITY_MODEL: str = os.getenv("OLLAMA_QUALITY_MODEL", "qwen3:4b")
-    OLLAMA_NUM_PREDICT: int = int(os.getenv("OLLAMA_NUM_PREDICT", "320"))
+    # Single-model configuration. Product knowledge comes from retrieval/memory;
+    # the LLM is used for synthesis, explanation, and follow-up reasoning.
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3:4b")
+    OLLAMA_NUM_PREDICT: int = int(os.getenv("OLLAMA_NUM_PREDICT", "768"))
     OLLAMA_TEMPERATURE: float = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
     OLLAMA_TIMEOUT_SECONDS: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "90"))
     
     # Feature / Experimentation Toggles
     ENABLE_MEMORY: bool = os.getenv("ENABLE_MEMORY", "true").lower() == "true"
     ENABLE_RECENT_CONTEXT: bool = os.getenv("ENABLE_RECENT_CONTEXT", "true").lower() == "true"
-    ENABLE_PRODUCT_CONTEXT: bool = os.getenv("ENABLE_PRODUCT_CONTEXT", "false").lower() == "true"
+    ENABLE_PRODUCT_CONTEXT: bool = os.getenv("ENABLE_PRODUCT_CONTEXT", "true").lower() == "true"
     ENABLE_GROUNDED_PRODUCT_ANSWER: bool = os.getenv("ENABLE_GROUNDED_PRODUCT_ANSWER", "true").lower() == "true"
     RECENT_CONTEXT_LIMIT: int = int(os.getenv("RECENT_CONTEXT_LIMIT", "6"))
-    ENABLE_WEB_SEARCH: bool = os.getenv("ENABLE_WEB_SEARCH", "true").lower() == "true"
+    ENABLE_WEB_SEARCH: bool = os.getenv("ENABLE_WEB_SEARCH", "false").lower() == "true"
     WEB_SEARCH_RESULTS: int = int(os.getenv("WEB_SEARCH_RESULTS", "5"))
-    ENABLE_EXTERNAL_PRODUCT_SEARCH: bool = os.getenv("ENABLE_EXTERNAL_PRODUCT_SEARCH", "true").lower() == "true"
+    ENABLE_EXTERNAL_PRODUCT_SEARCH: bool = os.getenv("ENABLE_EXTERNAL_PRODUCT_SEARCH", "false").lower() == "true"
     EXTERNAL_PRODUCT_SEARCH_RESULTS: int = int(os.getenv("EXTERNAL_PRODUCT_SEARCH_RESULTS", "3"))
     
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./app.db")
@@ -39,11 +38,8 @@ class Settings:
 
     @property
     def active_model(self) -> str:
-        """Resolves the current active Ollama model based on LLM_MODE."""
-        # Fallback to fast mode safely against invalid env entries.
-        if self.LLM_MODE.strip().lower() == "quality":
-            return self.OLLAMA_QUALITY_MODEL
-        return self.OLLAMA_FAST_MODEL
+        """Return the single Ollama model used for answer synthesis."""
+        return self.OLLAMA_MODEL
 
 
 settings = Settings()

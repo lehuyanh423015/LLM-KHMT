@@ -103,9 +103,9 @@ class MemoryServiceTests(TestCase):
 
         context = get_customer_memory_context("user-1", db)
 
-        self.assertIn("Ngan sach: duoi 15 trieu", context)
-        self.assertIn("San pham dang tim: laptop", context)
-        self.assertIn("Uu tien: gaming, battery", context)
+        self.assertIn("Ngân sách: duoi 15 trieu", context)
+        self.assertIn("Sản phẩm đang tìm: laptop", context)
+        self.assertIn("Ưu tiên: chơi game, pin", context)
 
     def test_budget_update_does_not_turn_ngan_sach_into_book_category(self):
         db = FakeDB()
@@ -122,3 +122,98 @@ class MemoryServiceTests(TestCase):
 
         self.assertEqual(db.profile.preferred_category, "laptop")
         self.assertEqual(db.profile.budget, "20 trieu")
+
+    def test_english_million_budget_is_stored_readably(self):
+        db = FakeDB()
+
+        extract_and_update_customer_memory(
+            session_id="user-1",
+            user_message="I want a laptop under 20 million for gaming",
+            assistant_response=None,
+            db=db,
+        )
+
+        self.assertEqual(db.profile.budget, "20 trieu")
+        self.assertEqual(db.profile.preferred_category, "laptop")
+
+    def test_extracts_ios_dislike_without_capturing_filler_words(self):
+        db = FakeDB()
+        db.profile = CustomerProfile(session_id="user-1")
+        db.profile.preferred_category = "phone"
+
+        extract_and_update_customer_memory(
+            session_id="user-1",
+            user_message=(
+                "toi khong thich dung IOS, neu co the thi uu tien cac hang "
+                "Trung Quoc de co ty le gia thanh / cau hinh tot nhat"
+            ),
+            assistant_response=None,
+            db=db,
+        )
+
+        self.assertIn("ios", db.profile.dislikes)
+        self.assertIn("china_brand", db.profile.priorities)
+        self.assertIn("value", db.profile.priorities)
+        self.assertNotIn("dung", db.profile.dislikes)
+
+    def test_dislike_phrase_does_not_store_noise_words(self):
+        db = FakeDB()
+        db.profile = CustomerProfile(session_id="user-1")
+        db.profile.preferred_category = "laptop"
+
+        extract_and_update_customer_memory(
+            session_id="user-1",
+            user_message="toi khong thich may cua nha Apple",
+            assistant_response=None,
+            db=db,
+        )
+
+        self.assertIn("brand:apple", db.profile.dislikes)
+        self.assertNotIn("cua", db.profile.dislikes)
+        self.assertNotIn("nha", db.profile.dislikes)
+
+        context = get_customer_memory_context("user-1", db)
+        self.assertIn("hãng Apple", context)
+
+    def test_extracts_richer_memory_for_brand_os_and_constraints(self):
+        db = FakeDB()
+
+        extract_and_update_customer_memory(
+            session_id="user-1",
+            user_message=(
+                "toi muon laptop Windows lam Photoshop, uu tien RAM 16GB, SSD lon, "
+                "tan nhiet tot, bao hanh chinh hang, thich Lenovo nhung khong can game"
+            ),
+            assistant_response=None,
+            db=db,
+        )
+
+        self.assertEqual(db.profile.preferred_category, "laptop")
+        self.assertIn("windows", db.profile.priorities)
+        self.assertIn("creator", db.profile.priorities)
+        self.assertIn("ram", db.profile.priorities)
+        self.assertIn("storage", db.profile.priorities)
+        self.assertIn("cooling", db.profile.priorities)
+        self.assertIn("warranty", db.profile.priorities)
+        self.assertIn("brand:lenovo", db.profile.priorities)
+        self.assertIn("gaming", db.profile.dislikes)
+        self.assertNotIn("gaming", db.profile.priorities or "")
+        self.assertIsNone(db.profile.budget)
+
+    def test_memory_context_formats_structured_tokens_for_llm(self):
+        db = FakeDB()
+        db.profile = CustomerProfile(session_id="user-1")
+        db.profile.budget = "tam 25 trieu"
+        db.profile.preferred_category = "laptop"
+        db.profile.priorities = "creator, ram, storage, cooling, brand:lenovo, windows"
+        db.profile.dislikes = "gaming, brand:apple, macos"
+
+        context = get_customer_memory_context("user-1", db)
+
+        self.assertIn("Ngân sách: tam 25 trieu", context)
+        self.assertIn("Ưu tiên:", context)
+        self.assertIn("đồ họa/Adobe/render", context)
+        self.assertIn("hãng Lenovo", context)
+        self.assertIn("Windows", context)
+        self.assertIn("Không thích/Cần tránh:", context)
+        self.assertIn("hãng Apple", context)

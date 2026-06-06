@@ -34,10 +34,6 @@ class CustomerProfileResponse(BaseModel):
     dislikes: Optional[str]
     updated_at: str
 
-class ModeRequest(BaseModel):
-    """Request to change operation mode."""
-    mode: str
-
 class ExperimentRequest(BaseModel):
     """Request to change experiment settings."""
     enable_memory: bool

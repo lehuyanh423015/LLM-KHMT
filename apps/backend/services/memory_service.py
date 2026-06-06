@@ -21,8 +21,10 @@ from services.data_normalization import (
     normalize_text,
     parse_budget_to_vnd,
     repair_mojibake,
+    tokenize,
     unique_preserve_order,
 )
+from services.query_understanding_service import understand_query
 
 
 CATEGORY_ALIASES = {
@@ -55,13 +57,72 @@ PRIORITY_ALIASES = {
     "battery": ["pin trau", "pin lau", "pin", "battery"],
     "camera": ["camera", "chup anh", "chup hinh"],
     "performance": ["hieu nang", "manh", "nhanh", "muot", "performance"],
+    "display": ["man hinh", "display", "oled", "amoled", "tan so quet"],
+    "storage": ["bo nho", "luu tru", "ssd", "storage", "rom"],
+    "ram": ["ram", "da nhiem", "multitask", "nhieu ung dung"],
+    "cooling": ["tan nhiet", "mat may", "khong nong", "cooling"],
     "lightweight": ["mong nhe", "nhe", "mong", "gon", "lightweight"],
     "durable": ["ben", "chac", "durable"],
-    "value": ["gia re", "re", "hop ly", "value", "cheap"],
+    "build_quality": ["build", "vo kim loai", "hoan thien", "chat lieu", "cao cap"],
+    "warranty": ["bao hanh", "chinh hang", "hau mai", "bao tri"],
+    "software": ["phan mem", "cap nhat", "on dinh", "he sinh thai"],
+    "value": ["gia re", "re", "hop ly", "value", "cheap", "gia thanh", "cau hinh", "p/p"],
+    "china_brand": ["hang trung quoc", "trung quoc", "hang tq", "china brand", "hang china"],
     "design": ["thiet ke", "dep", "design"],
     "creator": ["adobe", "premiere", "photoshop", "do hoa", "render", "edit video"],
     "office": ["van phong", "office", "hoc tap", "sinh vien"],
+    "coding": ["lap trinh", "code", "dev", "developer", "ide"],
+    "ai_work": ["ai", "machine learning", "deep learning", "llm", "cuda"],
+    "upgradeable": ["nang cap", "them ram", "them ssd", "upgrade"],
+    "compact": ["nho gon", "compact", "de cam", "de mang"],
+    "premium": ["flagship", "cao cap", "premium"],
+    "android": ["android"],
+    "ios": ["ios", "iphone"],
+    "windows": ["windows"],
+    "macos": ["macos", "macbook"],
 }
+
+BRAND_ALIASES = {
+    "apple": ["apple", "iphone", "macbook", "ipad"],
+    "samsung": ["samsung", "galaxy"],
+    "xiaomi": ["xiaomi", "redmi", "poco"],
+    "oppo": ["oppo"],
+    "vivo": ["vivo", "iqoo"],
+    "realme": ["realme"],
+    "oneplus": ["oneplus"],
+    "lenovo": ["lenovo", "thinkpad", "loq", "legion", "ideapad"],
+    "asus": ["asus", "vivobook", "zenbook", "tuf", "rog"],
+    "acer": ["acer", "aspire", "nitro", "predator"],
+    "hp": ["hp", "victus", "pavilion", "omen"],
+    "dell": ["dell", "inspiron", "xps", "alienware"],
+    "msi": ["msi"],
+    "lg": ["lg", "gram"],
+    "microsoft": ["surface", "microsoft"],
+    "google": ["google", "pixel"],
+    "nothing": ["nothing"],
+    "honor": ["honor"],
+}
+
+POSITIVE_PREFERENCE_MARKERS = [
+    "thich",
+    "uu tien",
+    "muon",
+    "can",
+    "nen",
+    "chon",
+    "nghieng ve",
+    "thien ve",
+    "prefer",
+]
+
+NEGATED_PRIORITY_MARKERS = [
+    "khong can",
+    "khong uu tien",
+    "khong quan trong",
+    "khong qua quan trong",
+    "it quan trong",
+    "bo qua",
+]
 
 COLOR_ALIASES = {
     "den": ["den", "black"],
@@ -76,10 +137,14 @@ COLOR_ALIASES = {
 
 DISLIKE_MARKERS = [
     "khong thich",
+    "khong tich",
     "ghet",
     "tranh",
     "khong lay",
     "khong can",
+    "khong muon",
+    "khong dung",
+    "khong xai",
     "avoid",
     "hate",
     "dislike",
@@ -87,6 +152,45 @@ DISLIKE_MARKERS = [
     "don't want",
     "no ",
 ]
+
+DISLIKE_VALUE_ALIASES = {
+    "ios": ["ios", "he dieu hanh ios"],
+    "apple": ["apple"],
+    "iphone": ["iphone"],
+    "macbook": ["macbook"],
+}
+
+DISLIKE_FILLER_WORDS = {
+    "dung",
+    "su",
+    "su dung",
+    "xai",
+    "lay",
+    "mua",
+    "chon",
+    "he",
+    "he dieu hanh",
+    "cua",
+    "nha",
+    "hang",
+    "thuong hieu",
+}
+
+FREEFORM_DISLIKE_STOPWORDS = {
+    "neu",
+    "co",
+    "the",
+    "thi",
+    "nen",
+    "uu",
+    "tien",
+    "cac",
+    "cua",
+    "nha",
+    "hang",
+    "thuong",
+    "hieu",
+}
 
 
 def extract_and_update_customer_memory(
@@ -112,6 +216,7 @@ def _extract_preferences_and_update_profile(
     if not normalized:
         return
 
+    parsed = understand_query(user_message)
     profile = db.query(CustomerProfile).filter(
         CustomerProfile.session_id == session_id
     ).first()
@@ -120,7 +225,7 @@ def _extract_preferences_and_update_profile(
         db.add(profile)
 
     old_category = normalize_text(getattr(profile, "preferred_category", None))
-    new_category = _extract_category(normalized)
+    new_category = parsed.get("category") or _extract_category(normalized)
     category_changed = bool(old_category and new_category and old_category != new_category)
 
     if category_changed:
@@ -130,10 +235,10 @@ def _extract_preferences_and_update_profile(
         if _is_cross_domain_change(old_category, new_category):
             profile.budget = None
 
-    budget_text = _extract_budget_text(user_message)
+    budget_text = _extract_budget_text(user_message) or (parsed.get("budget") or {}).get("raw")
     if budget_text:
         profile.budget = budget_text
-    elif parse_budget_to_vnd(user_message) is not None:
+    elif _has_budget_signal(user_message) and parse_budget_to_vnd(user_message) is not None:
         profile.budget = repair_mojibake(user_message).strip()
 
     if new_category:
@@ -144,10 +249,17 @@ def _extract_preferences_and_update_profile(
         profile.preferred_color = color
 
     priorities = _extract_priorities(normalized)
+    priorities.extend(_extract_preferred_brands(normalized))
+    priorities.extend(parsed.get("priorities", []))
+    priorities.extend(parsed.get("preferred_brands", []))
+    priorities.extend(parsed.get("preferred_os", []))
     if priorities:
         profile.priorities = _merge_csv(profile.priorities, priorities)
 
     dislikes = _extract_dislikes(normalized)
+    dislikes.extend(parsed.get("dislikes", []))
+    dislikes.extend(parsed.get("disliked_brands", []))
+    dislikes.extend(parsed.get("disliked_os", []))
     if dislikes:
         profile.dislikes = _merge_csv(profile.dislikes, dislikes)
         profile.priorities = _remove_csv_items(profile.priorities, dislikes)
@@ -161,10 +273,25 @@ def _extract_budget_text(text: str) -> Optional[str]:
     match = re.search(
         r"(duoi|tren|khoang|tam|toi da|toi thieu|tu|budget)?\s*"
         r"\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?\s*"
-        r"(trieu|tr|k|nghin|ngan|m|million|vnd|usd)",
+        r"(million|trieu|tr|k|nghin|ngan|m|vnd|usd)",
         normalized,
     )
-    return match.group(0).strip() if match else None
+    return _format_budget_text_for_memory(match.group(0).strip()) if match else None
+
+
+def _format_budget_text_for_memory(text: str) -> str:
+    return (
+        text.replace("million", "trieu")
+        .replace(" m", " trieu")
+        .replace("ngan", "k")
+        .strip()
+    )
+
+
+def _has_budget_signal(text: str) -> bool:
+    normalized = normalize_text(text)
+    signals = ["trieu", "tr", "vnd", "ngan", "nghin", "budget", "ngan sach", "tam gia", "gia"]
+    return any(_contains_alias(normalized, signal) for signal in signals)
 
 
 def _extract_category(normalized: str) -> Optional[str]:
@@ -192,26 +319,97 @@ def _extract_priorities(normalized: str) -> list[str]:
     return priorities
 
 
+def _extract_preferred_brands(normalized: str) -> list[str]:
+    if not any(marker in normalized for marker in POSITIVE_PREFERENCE_MARKERS):
+        return []
+
+    brands = []
+    for canonical, aliases in BRAND_ALIASES.items():
+        if any(_contains_alias(normalized, alias) for alias in aliases):
+            brands.append(f"brand:{canonical}")
+    return brands
+
+
 def _extract_dislikes(normalized: str) -> list[str]:
     if not any(marker in normalized for marker in DISLIKE_MARKERS):
         return []
 
     disliked = []
-    for category, aliases in CATEGORY_ALIASES.items():
+    for canonical, aliases in DISLIKE_VALUE_ALIASES.items():
         if any(_contains_alias(normalized, alias) for alias in aliases):
-            disliked.append(category)
-    for priority, aliases in PRIORITY_ALIASES.items():
-        if any(_contains_alias(normalized, alias) for alias in aliases):
-            disliked.append(priority)
+            disliked.append(canonical)
 
-    brand_match = re.search(
-        r"(?:khong thich|ghet|tranh|avoid|hate|dislike|no)\s+([a-z0-9]+)",
-        normalized,
-    )
-    if brand_match:
-        disliked.append(brand_match.group(1))
+    disliked.extend(_extract_negated_priorities(normalized))
+    disliked.extend(_extract_disliked_brands(normalized))
+    disliked.extend(_extract_freeform_dislike_terms(normalized))
 
     return unique_preserve_order(disliked)
+
+
+def _extract_negated_priorities(normalized: str) -> list[str]:
+    if not any(marker in normalized for marker in NEGATED_PRIORITY_MARKERS):
+        return []
+
+    dislikes = []
+    pattern = (
+        r"(?:khong can|khong uu tien|khong quan trong|khong qua quan trong|it quan trong|bo qua)"
+        r"\s+((?:[a-z0-9]+\s*){1,5})"
+    )
+    for match in re.finditer(pattern, normalized):
+        phrase = match.group(1).strip()
+        for canonical, aliases in PRIORITY_ALIASES.items():
+            if any(_contains_alias(phrase, alias) for alias in aliases):
+                dislikes.append(canonical)
+    return dislikes
+
+
+def _extract_disliked_brands(normalized: str) -> list[str]:
+    if not any(marker in normalized for marker in DISLIKE_MARKERS + NEGATED_PRIORITY_MARKERS):
+        return []
+
+    dislikes = []
+    pattern = (
+        r"(?:khong thich|khong tich|ghet|tranh|khong muon|khong dung|khong xai|khong can|"
+        r"khong uu tien|khong quan trong|khong qua quan trong|it quan trong|bo qua|"
+        r"avoid|hate|dislike|no)"
+        r"\s+((?:[a-z0-9]+\s*){1,5})"
+    )
+    for match in re.finditer(pattern, normalized):
+        phrase = match.group(1).strip()
+        for canonical, aliases in BRAND_ALIASES.items():
+            if any(_contains_alias(phrase, alias) for alias in aliases):
+                dislikes.append(f"brand:{canonical}")
+    return dislikes
+
+
+def _extract_freeform_dislike_terms(normalized: str) -> list[str]:
+    terms: list[str] = []
+    pattern = (
+        r"(?:khong thich|khong tich|ghet|tranh|khong muon|khong dung|khong xai|avoid|hate|dislike|no)"
+        r"\s+((?:[a-z0-9]+\s*){1,4})"
+    )
+    for match in re.finditer(pattern, normalized):
+        phrase = match.group(1).strip()
+        for filler in sorted(DISLIKE_FILLER_WORDS, key=len, reverse=True):
+            phrase = re.sub(rf"(?<![a-z0-9]){re.escape(filler)}(?![a-z0-9])", " ", phrase)
+        phrase = re.sub(r"\s+", " ", phrase).strip()
+        for token in tokenize(phrase):
+            if token in FREEFORM_DISLIKE_STOPWORDS:
+                continue
+            canonical = _canonical_memory_token(token)
+            if canonical:
+                terms.append(canonical)
+    return terms
+
+
+def _canonical_memory_token(token: str) -> Optional[str]:
+    for priority, aliases in PRIORITY_ALIASES.items():
+        if token == priority or token in aliases:
+            return priority
+    for brand, aliases in BRAND_ALIASES.items():
+        if token == brand or token in aliases:
+            return f"brand:{brand}"
+    return token if token not in DISLIKE_FILLER_WORDS else None
 
 
 def _merge_csv(existing: Optional[str], new_values: list[str]) -> str:

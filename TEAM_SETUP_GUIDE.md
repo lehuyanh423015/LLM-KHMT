@@ -59,9 +59,8 @@ cp .env.example .env
 ```
 
 ### Bước 5: Cài đặt Model cho Ollama
-Mở Ollama và chạy 2 lệnh sau để tải model về máy:
+Mở Ollama và chạy lệnh sau để tải model sinh câu trả lời về máy:
 ```bash
-ollama pull qwen2.5:0.5b
 ollama pull qwen3:4b
 ```
 
@@ -105,8 +104,8 @@ Hãy cài đặt các Extensions (Tiện ích mở rộng) sau:
 
 -   **File Cơ sở dữ liệu**: Khi bạn chạy dự án lần đầu, file `app.db` (SQLite) sẽ tự động được tạo ở thư mục `apps/backend`. Bạn không cần commit file này lên Git.
 -   **Quy trình làm việc**: Trước khi code, hãy chạy `git pull` để cập nhật mã nguồn mới nhất từ các thành viên khác.
--   **Chế độ Model**:
-    -   Nếu máy yếu: Dùng chế độ **FAST** (mặc định qwen2.5:0.5b).
-    -   Nếu máy mạnh/Cần độ chính xác cao: Chuyển sang chế độ **QUALITY** (Star icon trên UI).
+-   **Cấu hình trả lời**:
+    -   Mặc định dùng `qwen3:4b` để tổng hợp câu trả lời từ memory và product context.
+    -   Nếu máy chạy chậm hoặc demo cần phản hồi tức thì, có thể đặt `ENABLE_GROUNDED_PRODUCT_ANSWER=true` trong `.env` để dùng template grounded nhanh hơn.
 
 Nếu gặp lỗi trong quá trình cài đặt, hãy chụp màn hình Terminal và gửi vào nhóm chat của chúng mình nhé! Chúc cả nhóm làm việc hiệu quả! 🚀
