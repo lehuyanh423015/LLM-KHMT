@@ -101,6 +101,14 @@ class QueryUnderstandingServiceTests(TestCase):
         self.assertIn("lightweight", parsed["priorities"])
         self.assertIn("battery", parsed["priorities"])
 
+    def test_understands_slash_separated_xiaomi_poco_preference(self):
+        parsed = understand_query("cho toi mot vai mau dien thoai Xiaomi/Poco trong tam gia 30 trieu")
+
+        self.assertEqual(parsed["category"], "phone")
+        self.assertEqual(parsed["budget"]["target"], 30_000_000)
+        self.assertIn("brand:xiaomi", parsed["preferred_brands"])
+        self.assertNotIn("brand:samsung", parsed["preferred_brands"])
+
     def test_detects_small_talk_without_product_request(self):
         parsed = understand_query("tôi hiểu rồi. cảm ơn phản hồi của bạn")
 

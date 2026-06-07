@@ -420,6 +420,19 @@ def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
         + parsed.get("preferred_os", [])
     )
     priorities = _merge_turn_priorities(memory_priorities, query_priorities)
+    explicit_preferred_brands = {
+        item for item in parsed.get("preferred_brands", [])
+        if isinstance(item, str) and item.startswith("brand:")
+    }
+    if explicit_preferred_brands:
+        # A brand named in the current turn is a hard preference for this
+        # retrieval pass. Keep older memory needs, but do not let an older
+        # remembered brand compete with the brand the user just requested.
+        priorities = [
+            item for item in priorities
+            if not (isinstance(item, str) and item.startswith("brand:"))
+            or item in explicit_preferred_brands
+        ]
     if unlimited_budget and "max_performance" not in priorities:
         priorities.append("max_performance")
     if (unlimited_budget or "max_performance" in parsed.get("priorities", [])) and not parsed.get("preferred_brands"):
@@ -437,10 +450,6 @@ def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
         db=db,
         category=category,
     )
-    explicit_preferred_brands = {
-        item for item in parsed.get("preferred_brands", [])
-        if isinstance(item, str) and item.startswith("brand:")
-    }
     if explicit_preferred_brands:
         recent_brand_dislikes = [
             item for item in recent_brand_dislikes
