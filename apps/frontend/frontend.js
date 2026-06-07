@@ -1,4 +1,4 @@
-// frontend.js - clean version (no file attachments, no mode)
+// frontend.js - quản lý hội thoại, memory profile (đã xóa Color)
 (function () {
   let conversations = [];
   let activeConversationId = null;
@@ -16,6 +16,46 @@
   const themeIcon = themeToggle ? themeToggle.querySelector('i') : null;
   const startBtn = document.getElementById('startChatBtn');
   const welcomeScreen = document.getElementById('welcomeScreen');
+  const memoryProfileBtn = document.getElementById('memoryProfileBtn');
+  const memoryModal = document.getElementById('memoryModal');
+  const closeMemoryModal = document.getElementById('closeMemoryModal');
+
+  // Memory modal fields (không có màu)
+  const memBudgetSpan = document.getElementById('memBudget');
+  const memCategorySpan = document.getElementById('memCategory');
+  const memPrioritiesSpan = document.getElementById('memPriorities');
+  const memDislikesSpan = document.getElementById('memDislikes');
+  const enableMemoryExtractionChk = document.getElementById('enableMemoryExtraction');
+  const enableConversationalContextChk = document.getElementById('enableConversationalContext');
+  const enableProductContextChk = document.getElementById('enableProductContext');
+
+  async function updateMemoryModalFromBackend() {
+    try {
+      const profile = await window.ContinualAI.getCustomerProfile();
+      if (profile) {
+        if (memBudgetSpan) memBudgetSpan.innerText = profile.budget || '—';
+        if (memCategorySpan) memCategorySpan.innerText = profile.preferred_category || '—';
+        if (memPrioritiesSpan) memPrioritiesSpan.innerText = profile.priorities || '—';
+        if (memDislikesSpan) memDislikesSpan.innerText = profile.dislikes || '—';
+      } else {
+        if (memBudgetSpan) memBudgetSpan.innerText = '—';
+        if (memCategorySpan) memCategorySpan.innerText = '—';
+        if (memPrioritiesSpan) memPrioritiesSpan.innerText = '—';
+        if (memDislikesSpan) memDislikesSpan.innerText = '—';
+      }
+    } catch (e) {
+      console.warn('Failed to load customer profile', e);
+    }
+  }
+
+  async function syncExperimentFlags() {
+    const flags = {
+      enable_memory: enableMemoryExtractionChk ? enableMemoryExtractionChk.checked : true,
+      enable_recent_context: enableConversationalContextChk ? enableConversationalContextChk.checked : true,
+      enable_product_context: enableProductContextChk ? enableProductContextChk.checked : true
+    };
+    await window.ContinualAI.updateExperimentFlags(flags);
+  }
 
   function escapeHtml(str) {
     if (!str) return '';
@@ -32,8 +72,6 @@
     let html = escapeHtml(text);
     html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
-    html = html.replace(/^[•\-]\s+/gm, '• ');
-    html = html.replace(/(?:^|(\n))•\s+/g, '$1• ');
     html = html.replace(/\n/g, '<br>');
     return html;
   }
@@ -73,10 +111,7 @@
       if (msg.sender === 'assistant') {
         textDiv.innerHTML = markdownToHtml(msg.text);
         const links = textDiv.querySelectorAll('a');
-        links.forEach(link => {
-          link.style.color = 'var(--accent)';
-          link.style.textDecoration = 'underline';
-        });
+        links.forEach(link => link.style.color = 'var(--accent)');
       } else {
         textDiv.textContent = msg.text;
       }
@@ -97,8 +132,9 @@
   function renderMessages(conversation) {
     if (!conversation || !messageThread) return;
     messageThread.innerHTML = '';
-    conversation.messages.forEach((msg) => { messageThread.appendChild(renderMessage(msg)); });
+    conversation.messages.forEach(msg => { messageThread.appendChild(renderMessage(msg)); });
     scrollToBottom();
+    updateMemoryModalFromBackend();
   }
 
   function renderHistoryList() {
@@ -138,7 +174,7 @@
 
   function createNewConversation(skipRender = false) {
     const newId = Date.now() + '-' + Math.random().toString(36).slice(2,8);
-    const welcomeMsg = 'Xin chào! Tôi là trợ lý AI. Hãy hỏi tôi bất cứ điều gì nhé 🌟';
+    const welcomeMsg = 'Xin chào! Tôi là trợ lý AI. Hãy hỏi tôi về sản phẩm, tôi sẽ ghi nhớ sở thích của bạn 🌟';
     const newConv = {
       id: newId,
       title: `Cuộc trò chuyện ${conversations.length+1}`,
@@ -190,6 +226,7 @@
       document.getElementById('tempTyping')?.remove();
       renderMessages(conv);
       renderHistoryList();
+      await updateMemoryModalFromBackend();
     } catch (error) {
       console.error(error);
       const errorMsg = { text: `❌ Lỗi: ${error.message}`, sender: 'assistant', timestamp: new Date().toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'}) };
@@ -207,9 +244,9 @@
     sendMessageToActive(text);
   }
 
-  function initApp() {
+  async function initApp() {
     const initId = Date.now() + '-init';
-    const welcomeOnly = 'Chào mừng bạn! Tôi là trợ lý AI. Hãy thử hỏi về điện thoại, laptop hoặc sản phẩm bạn quan tâm nhé 🚀';
+    const welcomeOnly = 'Chào mừng bạn! Tôi là trợ lý AI. Hãy thử hỏi về laptop, điện thoại, ngân sách (ví dụ: "tôi cần laptop khoảng 20 triệu, chơi game") 🚀';
     conversations = [{
       id: initId,
       title: 'Trò chuyện đầu tiên',
@@ -219,6 +256,11 @@
     activeConversationId = initId;
     renderHistoryList();
     renderMessages(conversations[0]);
+    await updateMemoryModalFromBackend();
+    await syncExperimentFlags();
+    if (enableMemoryExtractionChk) enableMemoryExtractionChk.addEventListener('change', syncExperimentFlags);
+    if (enableConversationalContextChk) enableConversationalContextChk.addEventListener('change', syncExperimentFlags);
+    if (enableProductContextChk) enableProductContextChk.addEventListener('change', syncExperimentFlags);
   }
 
   // Event listeners
@@ -231,7 +273,16 @@
     themeToggle.addEventListener('click', () => { document.body.classList.toggle('light-mode'); const isLight = document.body.classList.contains('light-mode'); themeIcon.classList.toggle('fa-sun',!isLight); themeIcon.classList.toggle('fa-moon',isLight); localStorage.setItem('theme', isLight ? 'light' : 'dark'); });
   }
   if (startBtn && welcomeScreen) startBtn.addEventListener('click', () => welcomeScreen.classList.add('hidden'));
-  
+
+  if (memoryProfileBtn && memoryModal) {
+    memoryProfileBtn.addEventListener('click', () => {
+      memoryModal.classList.remove('hidden');
+      updateMemoryModalFromBackend();
+    });
+  }
+  if (closeMemoryModal) closeMemoryModal.addEventListener('click', () => memoryModal.classList.add('hidden'));
+  memoryModal?.addEventListener('click', (e) => { if (e.target === memoryModal) memoryModal.classList.add('hidden'); });
+
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initApp);
   else initApp();
 })();

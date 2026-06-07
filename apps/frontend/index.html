@@ -3,11 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src https://fonts.gstatic.com https://cdnjs.cloudflare.com; connect-src 'self' http://localhost:8000 http://127.0.0.1:8000;">
   <title>Continual AI | Học liên tục</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
   <link rel="stylesheet" href="style.css">
   <link rel="icon" type="image/x-icon" href="ai_icon.ico">
@@ -19,7 +18,7 @@
       <div class="welcome-title">Continual AI</div>
       <div class="welcome-subtitle">
         <i class="fas fa-robot"></i> 
-         <span>Hệ thống hội thoại học liên tục</span>
+        <span>Hệ thống hội thoại học liên tục</span>
       </div>
       <div class="feature-grid">
         <div class="feature-item"><div class="feature-icon"><i class="fas fa-brain"></i></div><span class="feature-label">Không quên</span></div>
@@ -55,6 +54,7 @@
           </div>
         </div>
         <div class="header-actions">
+          <button class="memory-profile-btn" id="memoryProfileBtn" title="Hồ sơ trí nhớ"><i class="fas fa-database"></i></button>
           <button class="theme-toggle" id="themeToggle"><i class="fas fa-sun"></i></button>
         </div>
       </div>
@@ -62,6 +62,63 @@
       <div class="input-container">
         <input type="text" id="chatInput" placeholder="Nhập tin nhắn...">
         <button class="send-button" id="sendMessageBtn"><i class="fas fa-arrow-up"></i></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal hiển thị bộ nhớ khách hàng (đã xóa Color) -->
+  <div id="memoryModal" class="memory-modal hidden">
+    <div class="memory-modal-container">
+      <div class="memory-modal-header">
+        <div class="memory-title">
+          <i class="fas fa-database"></i>
+          <h3>Hồ sơ khách hàng</h3>
+        </div>
+        <button class="close-modal-btn" id="closeMemoryModal"><i class="fas fa-times"></i></button>
+      </div>
+      
+      <div class="memory-experiment-section">
+        <div class="section-label">THÍ NGHIỆM</div>
+        <div class="control-group">
+          <label class="checkbox-label"><input type="checkbox" id="enableMemoryExtraction" checked> Ghi nhớ</label>
+          <label class="checkbox-label"><input type="checkbox" id="enableConversationalContext" checked> Ngữ cảnh hội thoại</label>
+          <label class="checkbox-label"><input type="checkbox" id="enableProductContext" checked> Ngữ cảnh sản phẩm</label>
+        </div>
+      </div>
+
+      <div class="memory-fields-section">
+        <div class="memory-field-card">
+          <div class="field-icon"><i class="fas fa-coins"></i></div>
+          <div class="field-detail">
+            <div class="field-label">Ngân sách</div>
+            <div class="field-value" id="memBudget">—</div>
+          </div>
+        </div>
+        <div class="memory-field-card">
+          <div class="field-icon"><i class="fas fa-laptop"></i></div>
+          <div class="field-detail">
+            <div class="field-label">Danh mục</div>
+            <div class="field-value" id="memCategory">—</div>
+          </div>
+        </div>
+        <div class="memory-field-card">
+          <div class="field-icon"><i class="fas fa-star"></i></div>
+          <div class="field-detail">
+            <div class="field-label">Ưu tiên</div>
+            <div class="field-value" id="memPriorities">—</div>
+          </div>
+        </div>
+        <div class="memory-field-card">
+          <div class="field-icon"><i class="fas fa-thumbs-down"></i></div>
+          <div class="field-detail">
+            <div class="field-label">Không thích</div>
+            <div class="field-value" id="memDislikes">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="memory-footer-note">
+        <i class="fas fa-robot"></i> Tự động học từ cuộc trò chuyện
       </div>
     </div>
   </div>
