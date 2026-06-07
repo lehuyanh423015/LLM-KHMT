@@ -24,7 +24,7 @@ from services.data_normalization import (
     tokenize,
     unique_preserve_order,
 )
-from services.query_understanding_service import understand_query
+from services.query_understanding_service import is_small_talk_message, understand_query
 
 
 CATEGORY_ALIASES = {
@@ -57,6 +57,16 @@ PRIORITY_ALIASES = {
     "battery": ["pin trau", "pin lau", "pin", "battery"],
     "camera": ["camera", "chup anh", "chup hinh"],
     "performance": ["hieu nang", "manh", "nhanh", "muot", "performance"],
+    "max_performance": [
+        "sieu manh",
+        "manh me",
+        "manh nhat",
+        "cau hinh sieu manh",
+        "khong quan tam gia",
+        "khong gioi han ngan sach",
+        "tat ca game nang",
+        "game nang hien tai",
+    ],
     "display": ["man hinh", "display", "oled", "amoled", "tan so quet"],
     "storage": ["bo nho", "luu tru", "ssd", "storage", "rom"],
     "ram": ["ram", "da nhiem", "multitask", "nhieu ung dung"],
@@ -66,6 +76,7 @@ PRIORITY_ALIASES = {
     "build_quality": ["build", "vo kim loai", "hoan thien", "chat lieu", "cao cap"],
     "warranty": ["bao hanh", "chinh hang", "hau mai", "bao tri"],
     "software": ["phan mem", "cap nhat", "on dinh", "he sinh thai"],
+    "keyboard": ["ban phim", "keyboard", "go phim", "typing"],
     "value": ["gia re", "re", "hop ly", "value", "cheap", "gia thanh", "cau hinh", "p/p"],
     "china_brand": ["hang trung quoc", "trung quoc", "hang tq", "china brand", "hang china"],
     "design": ["thiet ke", "dep", "design"],
@@ -120,6 +131,10 @@ NEGATED_PRIORITY_MARKERS = [
     "khong uu tien",
     "khong quan trong",
     "khong qua quan trong",
+    "khong choi",
+    "khong dung de",
+    "khong lien quan den",
+    "khong phuc vu",
     "it quan trong",
     "bo qua",
 ]
@@ -201,7 +216,7 @@ def extract_and_update_customer_memory(
 ) -> None:
     """Stable interface called by the chat orchestrator after each user turn."""
 
-    if not settings.ENABLE_MEMORY or not user_message:
+    if not settings.ENABLE_MEMORY or not user_message or is_small_talk_message(user_message):
         return
 
     _extract_preferences_and_update_profile(session_id, user_message, db)
@@ -235,11 +250,14 @@ def _extract_preferences_and_update_profile(
         if _is_cross_domain_change(old_category, new_category):
             profile.budget = None
 
-    budget_text = _extract_budget_text(user_message) or (parsed.get("budget") or {}).get("raw")
-    if budget_text:
-        profile.budget = budget_text
-    elif _has_budget_signal(user_message) and parse_budget_to_vnd(user_message) is not None:
-        profile.budget = repair_mojibake(user_message).strip()
+    if _has_unlimited_budget_signal(user_message):
+        profile.budget = "khong gioi han"
+    else:
+        budget_text = _extract_budget_text(user_message) or (parsed.get("budget") or {}).get("raw")
+        if budget_text:
+            profile.budget = budget_text
+        elif _has_budget_signal(user_message) and parse_budget_to_vnd(user_message) is not None:
+            profile.budget = repair_mojibake(user_message).strip()
 
     if new_category:
         profile.preferred_category = new_category
@@ -273,7 +291,7 @@ def _extract_budget_text(text: str) -> Optional[str]:
     match = re.search(
         r"(duoi|tren|khoang|tam|toi da|toi thieu|tu|budget)?\s*"
         r"\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?\s*"
-        r"(million|trieu|tr|k|nghin|ngan|m|vnd|usd)",
+        r"(million|trieu|tr|k|nghin|ngan|m|vnd|usd)(?![a-z0-9])",
         normalized,
     )
     return _format_budget_text_for_memory(match.group(0).strip()) if match else None
@@ -291,6 +309,25 @@ def _format_budget_text_for_memory(text: str) -> str:
 def _has_budget_signal(text: str) -> bool:
     normalized = normalize_text(text)
     signals = ["trieu", "tr", "vnd", "ngan", "nghin", "budget", "ngan sach", "tam gia", "gia"]
+    return any(_contains_alias(normalized, signal) for signal in signals)
+
+
+def _has_unlimited_budget_signal(text: object) -> bool:
+    normalized = normalize_text(text)
+    signals = [
+        "khong quan tam gia",
+        "khong quan tam ve gia",
+        "khong can quan tam ve gia",
+        "khong can quan tam gia",
+        "khong gioi han ngan sach",
+        "khong gioi han gia",
+        "bat ke gia",
+        "gia nao cung duoc",
+        "khong can biet gia",
+        "khong lo ve gia",
+        "no budget limit",
+        "unlimited budget",
+    ]
     return any(_contains_alias(normalized, signal) for signal in signals)
 
 

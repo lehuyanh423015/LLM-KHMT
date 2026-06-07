@@ -83,7 +83,7 @@ def parse_budget_to_vnd(text: object) -> Optional[float]:
     range_match = re.search(
         r"(\d+(?:[.,]\d+)?)\s*(?:-|to|den)\s*"
         r"(\d+(?:[.,]\d+)?)\s*"
-        r"(trieu|tr|k|nghin|ngan|m|million|vnd|usd)?",
+        r"(trieu|tr|k|nghin|ngan|m|million|vnd|usd)?(?![a-z0-9])",
         normalized,
     )
     if range_match:
@@ -92,7 +92,7 @@ def parse_budget_to_vnd(text: object) -> Optional[float]:
     match = re.search(
         r"(?:duoi|tren|khoang|tam|toi da|toi thieu|tu|budget|under|below|about|around)?"
         r"\s*(\d+(?:[.,]\d+)?)\s*"
-        r"(trieu|tr|k|nghin|ngan|m|million|vnd|usd)?",
+        r"(trieu|tr|k|nghin|ngan|m|million|vnd|usd)?(?![a-z0-9])",
         normalized,
     )
     if not match:

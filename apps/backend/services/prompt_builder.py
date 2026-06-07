@@ -55,15 +55,34 @@ def _build_system_prompt(memory_context: str, product_context: str) -> str:
     if product_context.strip():
         prompt += f"PRODUCT KNOWLEDGE CONTEXT:\n{product_context}\n\n"
 
-    prompt += (
-        "Response style:\n"
-        "- Keep the answer under 180 Vietnamese words unless the user asks for more.\n"
-        "- Start with the most useful answer first.\n"
-        "- If product context contains candidates, recommend 3 to 4 concrete options from that context only.\n"
-        "- For each option, use this format: name - price range - fit reason - trade-off - verify price/warranty/stock.\n"
-        "- Explain why each suggestion fits the customer.\n"
-        "- Separate confirmed context from general advice.\n"
-    )
+    if "GROUNDED PRODUCT DRAFT FROM RETRIEVAL" in product_context:
+        prompt += (
+            "Grounded rewrite mode:\n"
+            "- Treat the grounded draft as factual notes, not as final wording.\n"
+            "- Write naturally in Vietnamese with full diacritics.\n"
+            "- For comparisons, make an actual judgment: which product fits which user, where each wins, and the final recommendation.\n"
+            "- For one named product, focus only on that product unless the user explicitly asks for alternatives.\n"
+            "- Do not introduce products, specs, prices, links, or claims that are absent from the context.\n\n"
+        )
+
+    if "GROUNDED PRODUCT DRAFT FROM RETRIEVAL" in product_context:
+        prompt += (
+            "Response style:\n"
+            "- Keep the answer compact but complete.\n"
+            "- Start with the conclusion, then explain the most important reasons.\n"
+            "- Use short paragraphs or bullets only when they improve readability.\n"
+            "- End with what the user should verify before buying.\n"
+        )
+    else:
+        prompt += (
+            "Response style:\n"
+            "- Keep the answer under 180 Vietnamese words unless the user asks for more.\n"
+            "- Start with the most useful answer first.\n"
+            "- If product context contains candidates, recommend 3 to 4 concrete options from that context only.\n"
+            "- For each option, use this format: name - price range - fit reason - trade-off - verify price/warranty/stock.\n"
+            "- Explain why each suggestion fits the customer.\n"
+            "- Separate confirmed context from general advice.\n"
+        )
     return prompt
 
 

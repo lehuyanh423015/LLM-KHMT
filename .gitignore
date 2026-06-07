@@ -1,5 +1,7 @@
 # Environment
 .env
+.env.*
+!.env.example
 *.env.local
 
 # Python
@@ -18,13 +20,19 @@ coverage.xml
 htmlcov/
 dist/
 build/
+.ipynb_checkpoints/
 
 # SQLite
 *.db
 *.sqlite3
+*.sqlite
+*.db-journal
+*.db-shm
+*.db-wal
 
 # Chroma
 chroma_data/
+*/chroma_data/
 
 # Node
 node_modules/
@@ -35,6 +43,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .turbo/
+*.tsbuildinfo
 
 # IDE
 .vscode/
@@ -45,3 +54,7 @@ pnpm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local debug / scratch files
+debug_logic.py
+*.log

@@ -64,10 +64,12 @@ from services.product_retrieval_service import (
     format_products_for_llm,
     get_product_knowledge_context,
     _extract_budget_constraint,
+    _load_mini_catalog,
     _search_external_products,
     parse_budget,
     search_product_database,
 )
+from services.answer_planning_service import _product_summary
 from services.data_normalization import normalize_text
 
 
@@ -88,6 +90,53 @@ class FakeDB:
 
     def query(self, model):
         return FakeQuery(self._profile)
+
+
+class FakeListQuery:
+    def __init__(self, first_value=None, all_values=None):
+        self._first_value = first_value
+        self._all_values = all_values or []
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def limit(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return self._first_value
+
+    def all(self):
+        return self._all_values
+
+
+class FakeConversation:
+    id = 1
+
+
+class FakeAssistantMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class FakeConversationDB:
+    def __init__(self, assistant_messages):
+        self._assistant_messages = assistant_messages
+
+    def query(self, model):
+        model_name = getattr(model, "__name__", "")
+        if model_name == "CustomerProfile":
+            return FakeQuery(None)
+        if model_name == "Conversation":
+            return FakeListQuery(first_value=FakeConversation())
+        if model_name == "Message":
+            return FakeListQuery(
+                all_values=[FakeAssistantMessage(content) for content in self._assistant_messages]
+            )
+        return FakeQuery(None)
 
 
 class ProductRetrievalServiceTests(TestCase):
@@ -188,6 +237,25 @@ class ProductRetrievalServiceTests(TestCase):
         self.assertNotIn("ASUS TUF Gaming A15", context)
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_small_talk_does_not_create_product_context_or_grounded_answer(self, _mock_client):
+        db = FakeDB()
+        user_message = "toi hieu roi. cam on phan hoi cua ban"
+
+        context = get_product_knowledge_context(
+            user_message=user_message,
+            session_id="user-1",
+            db=db,
+        )
+        answer = get_grounded_product_answer(
+            user_message=user_message,
+            session_id="user-1",
+            db=db,
+        )
+
+        self.assertEqual(context, "")
+        self.assertEqual(answer, "")
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
     def test_around_budget_prioritizes_requested_price_band(self, _mock_client):
         from models.database_models import CustomerProfile
 
@@ -235,6 +303,27 @@ class ProductRetrievalServiceTests(TestCase):
         self.assertEqual(context, "")
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_small_talk_does_not_return_product_context_or_answer(self, _mock_client):
+        db = FakeDB()
+
+        self.assertEqual(
+            get_product_knowledge_context(
+                user_message="tôi hiểu rồi. cảm ơn phản hồi của bạn",
+                session_id="user-1",
+                db=db,
+            ),
+            "",
+        )
+        self.assertEqual(
+            get_grounded_product_answer(
+                user_message="tôi hiểu rồi. cảm ơn phản hồi của bạn",
+                session_id="user-1",
+                db=db,
+            ),
+            "",
+        )
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
     def test_grounded_answer_asks_when_machine_category_is_ambiguous(self, _mock_client):
         answer = get_grounded_product_answer(
             user_message="toi can mua may choi game duoi 20 trieu",
@@ -245,14 +334,58 @@ class ProductRetrievalServiceTests(TestCase):
         self.assertIn("điện thoại hay laptop", answer.lower())
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
-    def test_grounded_answer_includes_tradeoff_for_best_pick(self, _mock_client):
+    def test_grounded_answer_includes_buying_note_for_best_pick(self, _mock_client):
         answer = get_grounded_product_answer(
             user_message="dien thoai choi game duoi 20 trieu",
             session_id="user-1",
             db=FakeDB(),
         )
 
-        self.assertIn("Không nên chọn nếu", answer)
+        self.assertIn("Đánh giá nhanh", answer)
+        self.assertIn("Lưu ý khi chốt mua", answer)
+        self.assertNotIn("Không nên chọn nếu", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_phone_recommendation_alternatives_use_distinct_product_facts(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="goi y dien thoai choi game tam 20 trieu",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("Realme GT 7 Pro", answer)
+        self.assertIn("6500mAh", answer)
+        self.assertIn("iQOO 13", answer)
+        self.assertIn("144Hz", answer)
+        self.assertIn("RedMagic 10 Pro", answer)
+        self.assertIn("gaming phone", answer)
+        self.assertNotIn(
+            "Hiệu năng là điểm đáng chú ý, hợp người ưu tiên độ mượt và chơi game; "
+            "pin là lợi thế cho nhu cầu dùng lâu trong ngày; màn hình tốt giúp trải nghiệm game",
+            answer,
+        )
+
+    def test_laptop_recommendation_blurbs_vary_by_product_family(self):
+        catalog = _load_mini_catalog()
+
+        def summary_for(name):
+            item = next(product for product in catalog if product.get("name") == name)
+            return _product_summary(
+                item=item,
+                category="laptop",
+                priorities={"gaming", "performance"},
+                budget_target=35_000_000,
+            )["recommendation_blurb"]
+
+        rog = summary_for("ASUS ROG Strix G16 RTX 4060")
+        tuf = summary_for("ASUS TUF A14 RTX 4060")
+        dell = summary_for("Dell G15 RTX 4060")
+
+        self.assertIn("màn hình", rog)
+        self.assertTrue(any(token in tuf for token in ["tính cơ động", "pin/cân nặng", "di chuyển"]))
+        self.assertTrue(any(token in dell for token in ["hiệu năng", "RTX", "GPU"]))
+        self.assertNotEqual(rog.split(".")[0], tuf.split(".")[0])
+        self.assertNotEqual(tuf.split(".")[0], dell.split(".")[0])
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
     def test_grounded_answer_respects_ios_dislike_from_memory(self, _mock_client):
@@ -336,6 +469,32 @@ class ProductRetrievalServiceTests(TestCase):
         )
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_unlimited_budget_ignores_old_budget_and_brand_memory(self, _mock_client):
+        from models.database_models import CustomerProfile
+
+        profile = CustomerProfile(
+            session_id="user-1",
+            budget="50 trieu",
+            preferred_category="laptop",
+            priorities="choi game, brand:lenovo, gia/cau hinh, hieu nang",
+        )
+
+        answer = get_grounded_product_answer(
+            user_message=(
+                "toi muon laptop cau hinh sieu manh de choi tat ca game nang hien tai "
+                "khong can quan tam ve gia"
+            ),
+            session_id="user-1",
+            db=FakeDB(profile),
+        )
+
+        first_choice = next(line for line in answer.splitlines() if line.startswith("Mình sẽ ưu tiên:"))
+        self.assertIn("MSI Raider 18 RTX 5090", first_choice)
+        self.assertNotIn("ngân sách 50", answer)
+        self.assertIn("Razer Blade 16 RTX 4080", answer)
+        self.assertIn("Lenovo Legion Pro 7 RTX 4080", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
     def test_brand_preference_filters_to_brand_when_available(self, _mock_client):
         answer = get_grounded_product_answer(
             user_message=(
@@ -364,6 +523,322 @@ class ProductRetrievalServiceTests(TestCase):
         self.assertNotIn("Phương án thay thế", answer)
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_spec_detail_query_uses_product_detail_template(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="hay cho toi cau hinh chi tiet cua ASUS ROG Zephyrus G14",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("ASUS ROG Zephyrus G14 - cấu hình và đánh giá nhanh", answer)
+        self.assertIn("AMD Ryzen 9 8945HS", answer)
+        self.assertIn("16GB/32GB LPDDR5X", answer)
+        self.assertIn("1TB NVMe SSD", answer)
+        self.assertIn("CPU", answer)
+        self.assertIn("GPU", answer)
+        self.assertIn("Tản nhiệt", answer)
+        self.assertIn("khả năng nâng cấp", answer)
+        self.assertIn("Đánh giá theo trải nghiệm mua", answer)
+        self.assertNotIn("Cách đọc cấu hình này", answer)
+        self.assertNotIn("Phương án thay thế", answer)
+        self.assertNotIn("[mini_catalog]", answer)
+        self.assertNotIn("[expanded_demo_catalog]", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_partial_product_name_resolves_to_specific_model(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="cho toi cau hinh chi tiet cua Lenovo Legion Pro 5",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("Lenovo Legion Pro 5 RTX 4070", answer)
+        self.assertIn("Intel Core i7-14650HX", answer)
+        self.assertIn("RTX 4070", answer)
+        self.assertIn("16GB/32GB DDR5", answer)
+        self.assertIn("1TB NVMe SSD", answer)
+        self.assertIn("Đánh giá theo trải nghiệm mua", answer)
+        self.assertNotIn("ASUS ROG Zephyrus", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_phone_detail_template_avoids_repeating_spec_sections(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="cho toi cau hinh chi tiet Xiaomi 14T",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("Xiaomi 14T - cấu hình và đánh giá nhanh", answer)
+        self.assertIn("Thông số chính", answer)
+        self.assertIn("MediaTek Dimensity 8300-Ultra", answer)
+        self.assertIn("Đánh giá theo trải nghiệm mua", answer)
+        self.assertNotIn("Cách đọc cấu hình này", answer)
+        self.assertNotIn("Nhu cầu phù hợp", answer)
+        self.assertLessEqual(answer.count("MediaTek Dimensity 8300-Ultra"), 1)
+        self.assertLessEqual(answer.count("5000mAh"), 1)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_iqoo_detail_query_uses_spec_detail_with_rule_flow(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="duoc roi vay hay phan tich chi tiet hon ve cau hinh cua iqoo 13 xem no manh me o nhung diem nao",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("iQOO 13", answer)
+        self.assertIn("cấu hình", answer.lower())
+        self.assertIn("Thông số chính", answer)
+        self.assertIn("Qualcomm Snapdragon 8 Elite", answer)
+        self.assertIn("6150mAh", answer)
+        self.assertNotIn("Xin lỗi", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_top_end_laptop_detail_includes_exact_reference_specs(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="cau hinh chi tiet MSI Raider 18 RTX 5090",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("MSI Raider 18 RTX 5090", answer)
+        self.assertIn("Intel Core Ultra 9 285HX", answer)
+        self.assertIn("RTX 5090 Laptop GPU 24GB GDDR7", answer)
+        self.assertIn("64GB DDR5", answer)
+        self.assertIn("2TB NVMe SSD", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_contextual_reference_uses_recent_product(self, _mock_client):
+        db = FakeConversationDB(
+            assistant_messages=[
+                "Mình vừa gợi ý Lenovo Legion Pro 5 RTX 4070 - 54.99 triệu cho nhu cầu gaming."
+            ]
+        )
+
+        answer = get_grounded_product_answer(
+            user_message="cau hinh chi tiet cua san pham tren nhu the nao",
+            session_id="user-1",
+            db=db,
+        )
+
+        self.assertIn("Lenovo Legion Pro 5 RTX 4070", answer)
+        self.assertIn("Đánh giá theo trải nghiệm mua", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_comparison_query_compares_named_products_only(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="so sanh ASUS ROG Zephyrus G14 voi Lenovo LOQ 15 RTX 4060 choi game",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("mình nghiêng về", answer.lower())
+        self.assertIn("ASUS ROG Zephyrus G14", answer)
+        self.assertIn("Lenovo LOQ 15 RTX 4060", answer)
+        self.assertIn("GPU", answer)
+        self.assertIn("Kết luận", answer)
+        self.assertNotIn("Phương án thay thế", answer)
+        self.assertNotIn("HP Omen", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_comparison_with_two_full_product_names_includes_both_specs(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message=(
+                "có vẻ như Lenovo Legion 5 RTX 4070 và Acer Predator Helios Neo 16 RTX 4070 "
+                "khá giống nhau về cấu hình, so sánh 2 sản phẩm này"
+            ),
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("Lenovo Legion 5 RTX 4070", answer)
+        self.assertIn("Acer Predator Helios Neo 16 RTX 4070", answer)
+        self.assertIn("Thông số chính", answer)
+        self.assertIn("So sánh trực tiếp", answer)
+        self.assertIn("Điểm tương đồng", answer)
+        self.assertIn("NVIDIA GeForce RTX 4070 Laptop GPU 8GB GDDR6", answer)
+        self.assertIn("Intel Core i7-14650HX", answer)
+        self.assertIn("AMD Ryzen 7 8845HS", answer)
+        self.assertNotIn("Phương án thay thế", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_phone_comparison_includes_both_products_and_direct_criteria(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="so sanh mau xiaomi 14 va realme gt 7 pro de choi game",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("Xiaomi 14", answer)
+        self.assertIn("Realme GT 7 Pro", answer)
+        self.assertIn("Snapdragon 8 Gen 3", answer)
+        self.assertIn("Snapdragon 8 Elite", answer)
+        self.assertIn("So sánh trực tiếp", answer)
+        self.assertIn("Hiệu năng/chip", answer)
+        self.assertIn("Chọn theo nhu cầu", answer)
+        self.assertIn("nghiêng về Realme GT 7 Pro", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_brand_named_in_recommendation_keeps_recommendations_in_brand(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="goi y laptop Lenovo tam 30 trieu choi game",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("Lenovo", answer)
+        self.assertNotIn("HP Omen", answer)
+        self.assertNotIn("ASUS TUF", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_brand_follow_up_uses_existing_laptop_budget(self, _mock_client):
+        from models.database_models import CustomerProfile
+
+        profile = CustomerProfile(
+            session_id="user-1",
+            budget="khoang 50 trieu",
+            preferred_category="laptop",
+            priorities="gaming, performance",
+        )
+
+        apple_answer = get_grounded_product_answer(
+            user_message="toi muon tham khao mot vai mau cua hang Apple",
+            session_id="user-1",
+            db=FakeDB(profile),
+        )
+        lenovo_answer = get_grounded_product_answer(
+            user_message="vay thi cho toi mot vai mau laptop cua lenovo",
+            session_id="user-1",
+            db=FakeDB(profile),
+        )
+
+        self.assertIn("MacBook", apple_answer)
+        self.assertNotIn("Xin lỗi", apple_answer)
+        self.assertIn("Lenovo", lenovo_answer)
+        self.assertNotIn("Xin lỗi", lenovo_answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_unrealistic_laptop_memory_budget_does_not_block_retrieval(self, _mock_client):
+        from models.database_models import CustomerProfile
+
+        profile = CustomerProfile(
+            session_id="user-1",
+            budget="2 trieu",
+            preferred_category="laptop",
+            priorities="gaming, performance",
+        )
+
+        answer = get_grounded_product_answer(
+            user_message="vay thi cho toi mot vai mau laptop cua lenovo",
+            session_id="user-1",
+            db=FakeDB(profile),
+        )
+
+        self.assertIn("Lenovo", answer)
+        self.assertNotIn("Xin lỗi", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_other_brand_request_excludes_owned_brand_and_recent_pick(self, _mock_client):
+        from models.database_models import CustomerProfile
+
+        profile = CustomerProfile(
+            session_id="user-1",
+            budget="tam 30 trieu",
+            preferred_category="laptop",
+            priorities="gaming, performance, brand:lenovo",
+        )
+
+        class DBWithProfileAndRecent(FakeConversationDB):
+            def query(self, model):
+                model_name = getattr(model, "__name__", "")
+                if model_name == "CustomerProfile":
+                    return FakeQuery(profile)
+                return super().query(model)
+
+        db = DBWithProfileAndRecent(
+            assistant_messages=[
+                "Mình vừa gợi ý Lenovo LOQ 15 RTX 4060 và Lenovo Legion 5 RTX 4070 cho nhu cầu gaming."
+            ]
+        )
+
+        answer = get_grounded_product_answer(
+            user_message="tôi đang có một chiếc laptop của Lenovo rồi, hãy thử gợi ý các hãng khác xem",
+            session_id="user-1",
+            db=db,
+        )
+
+        self.assertIn("laptop", answer.lower())
+        self.assertNotIn("Lenovo", answer)
+        self.assertTrue(any(name in answer for name in ["ASUS", "Acer", "HP", "Dell", "MSI", "Gigabyte"]))
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_other_brand_follow_up_excludes_recent_recommended_brand(self, _mock_client):
+        from models.database_models import CustomerProfile
+
+        profile = CustomerProfile(
+            session_id="user-1",
+            budget="tam 20 trieu",
+            preferred_category="phone",
+            priorities="gaming, performance, brand:xiaomi",
+        )
+
+        class DBWithProfileAndRecent(FakeConversationDB):
+            def query(self, model):
+                model_name = getattr(model, "__name__", "")
+                if model_name == "CustomerProfile":
+                    return FakeQuery(profile)
+                return super().query(model)
+
+        db = DBWithProfileAndRecent(
+            assistant_messages=[
+                "Minh vua goi y Xiaomi 14, POCO X7 Pro va Xiaomi 14T cho nhu cau choi game."
+            ]
+        )
+
+        answer = get_grounded_product_answer(
+            user_message="goi y mot vai san pham cua hang khac",
+            session_id="user-1",
+            db=db,
+        )
+
+        self.assertIn("điện thoại", answer.lower())
+        self.assertNotIn("Xiaomi", answer)
+        self.assertNotIn("POCO", answer)
+        self.assertTrue(any(name in answer for name in ["Realme", "iQOO", "OnePlus", "Samsung", "Honor"]))
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_memory_category_guides_vague_budget_follow_up(self, _mock_client):
+        from models.database_models import CustomerProfile
+
+        profile = CustomerProfile(
+            session_id="user-1",
+            budget="khoang 50 trieu",
+            preferred_category="laptop",
+            priorities="choi game",
+        )
+
+        answer = get_grounded_product_answer(
+            user_message="tai chinh cua toi dang o khoang 50 trieu, hay dua ra nhung san pham tot hon",
+            session_id="user-1",
+            db=FakeDB(profile),
+        )
+
+        self.assertIn("laptop", answer.lower())
+        self.assertNotIn("Galaxy Z Fold", answer)
+        self.assertNotIn("điện thoại", answer.lower())
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_direct_outside_brand_request_excludes_brand(self, _mock_client):
+        answer = get_grounded_product_answer(
+            user_message="ngoài Lenovo thì còn laptop gaming nào tầm 30 triệu không",
+            session_id="user-1",
+            db=FakeDB(),
+        )
+
+        self.assertIn("laptop", answer.lower())
+        self.assertNotIn("Lenovo", answer)
+        self.assertTrue(any(name in answer for name in ["ASUS", "Acer", "HP", "Dell", "MSI", "Gigabyte"]))
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
     def test_retrieval_uses_memory_category_for_follow_up_dislike(self, _mock_client):
         from models.database_models import CustomerProfile
 
@@ -384,6 +859,29 @@ class ProductRetrievalServiceTests(TestCase):
         self.assertIn("điện thoại", answer.lower())
         self.assertNotIn("iPhone", answer)
         self.assertNotIn("Apple", answer)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_current_phone_needs_override_old_gaming_memory_in_answer_text(self, _mock_client):
+        from models.database_models import CustomerProfile
+
+        profile = CustomerProfile(
+            session_id="user-1",
+            budget="tam 30 trieu",
+            preferred_category="phone",
+            priorities="gaming, performance",
+        )
+
+        answer = get_grounded_product_answer(
+            user_message="toi can dien thoai tam 30 trieu uu tien pin camera chup anh thiet ke man hinh",
+            session_id="user-1",
+            db=FakeDB(profile),
+        )
+
+        self.assertIn("điện thoại", answer.lower())
+        self.assertNotIn("chơi game", answer.lower())
+        self.assertNotIn("trải nghiệm game", answer.lower())
+        self.assertIn("camera", answer.lower())
+        self.assertIn("màn hình", answer.lower())
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
     def test_retrieval_infers_laptop_from_workload_without_keyword(self, _mock_client):

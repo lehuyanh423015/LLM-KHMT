@@ -123,6 +123,28 @@ class MemoryServiceTests(TestCase):
         self.assertEqual(db.profile.preferred_category, "laptop")
         self.assertEqual(db.profile.budget, "20 trieu")
 
+    def test_product_count_does_not_overwrite_budget(self):
+        db = FakeDB()
+        db.profile = CustomerProfile(session_id="user-1")
+        db.profile.preferred_category = "laptop"
+        db.profile.budget = "khoang 50 trieu"
+
+        extract_and_update_customer_memory(
+            session_id="user-1",
+            user_message="toi muon tham khao 2 mau cua hang Apple",
+            assistant_response=None,
+            db=db,
+        )
+        extract_and_update_customer_memory(
+            session_id="user-1",
+            user_message="vay thi cho toi 2 mau laptop cua lenovo",
+            assistant_response=None,
+            db=db,
+        )
+
+        self.assertEqual(db.profile.budget, "khoang 50 trieu")
+        self.assertEqual(db.profile.preferred_category, "laptop")
+
     def test_english_million_budget_is_stored_readably(self):
         db = FakeDB()
 
@@ -135,6 +157,19 @@ class MemoryServiceTests(TestCase):
 
         self.assertEqual(db.profile.budget, "20 trieu")
         self.assertEqual(db.profile.preferred_category, "laptop")
+
+    def test_small_talk_does_not_update_memory(self):
+        db = FakeDB()
+
+        extract_and_update_customer_memory(
+            session_id="user-1",
+            user_message="toi hieu roi. cam on phan hoi cua ban",
+            assistant_response=None,
+            db=db,
+        )
+
+        self.assertIsNone(db.profile)
+        self.assertEqual(db.commits, 0)
 
     def test_extracts_ios_dislike_without_capturing_filler_words(self):
         db = FakeDB()
@@ -199,6 +234,25 @@ class MemoryServiceTests(TestCase):
         self.assertIn("gaming", db.profile.dislikes)
         self.assertNotIn("gaming", db.profile.priorities or "")
         self.assertIsNone(db.profile.budget)
+
+    def test_explicit_no_gaming_moves_gaming_from_priorities_to_dislikes(self):
+        db = FakeDB()
+        db.profile = CustomerProfile(session_id="user-1")
+        db.profile.preferred_category = "phone"
+        db.profile.priorities = "gaming, performance"
+
+        extract_and_update_customer_memory(
+            session_id="user-1",
+            user_message="toi khong choi game nua, can dien thoai pin tot camera dep man hinh dep",
+            assistant_response=None,
+            db=db,
+        )
+
+        self.assertIn("gaming", db.profile.dislikes)
+        self.assertNotIn("gaming", db.profile.priorities or "")
+        self.assertIn("battery", db.profile.priorities)
+        self.assertIn("camera", db.profile.priorities)
+        self.assertIn("display", db.profile.priorities)
 
     def test_memory_context_formats_structured_tokens_for_llm(self):
         db = FakeDB()
