@@ -13,16 +13,13 @@
   <link rel="icon" type="image/x-icon" href="ai_icon.ico">
 </head>
 <body>
-  <!-- Container thông báo Uiverse (góc trên bên phải) -->
-  <div id="notificationContainer" class="notification-container"></div>
-
   <div class="welcome-screen" id="welcomeScreen">
     <div class="welcome-card">
       <div class="welcome-logo"><img src="ai_icon.png" alt="AI Logo"></div>
       <div class="welcome-title">Continual AI</div>
       <div class="welcome-subtitle">
-        <i class="fas fa-robot"></i>
-        <span>Hệ thống hội thoại học liên tục</span>
+        <i class="fas fa-robot"></i> 
+         <span>Hệ thống hội thoại học liên tục</span>
       </div>
       <div class="feature-grid">
         <div class="feature-item"><div class="feature-icon"><i class="fas fa-brain"></i></div><span class="feature-label">Không quên</span></div>
@@ -58,29 +55,16 @@
           </div>
         </div>
         <div class="header-actions">
-          <!-- Dropdown chọn chế độ chuyên nghiệp -->
-          <div class="mode-select-wrapper">
-            <select id="modeSelect" class="mode-select">
-              <option value="fast">⚡ Fast – Phản hồi nhanh</option>
-              <option value="quality">🎯 Quality – Chất lượng cao</option>
-            </select>
-          </div>
           <button class="theme-toggle" id="themeToggle"><i class="fas fa-sun"></i></button>
         </div>
       </div>
-
       <div class="message-thread" id="messageThread"></div>
-      <div class="attachment-preview" id="attachmentPreview"></div>
-
       <div class="input-container">
-        <button class="attach-btn" id="attachBtn"><i class="fas fa-plus"></i></button>
         <input type="text" id="chatInput" placeholder="Nhập tin nhắn...">
         <button class="send-button" id="sendMessageBtn"><i class="fas fa-arrow-up"></i></button>
       </div>
     </div>
   </div>
-
-  <input type="file" id="fileInput" multiple style="display:none" accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain">
 
   <script src="backend.js"></script>
   <script src="frontend.js"></script>

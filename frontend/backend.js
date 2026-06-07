@@ -8,7 +8,7 @@ window.ContinualAI = (function() {
     return id;
   }
 
-  async function getReply(userMessage, attachments = []) {
+  async function getReply(userMessage) {
     try {
       const response = await fetch(API_BASE_URL + '/chat', {
         method: 'POST',
