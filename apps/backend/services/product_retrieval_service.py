@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from core.config import settings
 from models.database_models import Conversation, CustomerProfile, Message
+from services.answer_planning_service import build_answer_plan, render_answer_plan
 from services.data_normalization import (
     format_vnd,
     normalize_text,
@@ -28,7 +29,7 @@ from services.data_normalization import (
     tokenize,
     unique_preserve_order,
 )
-from services.query_understanding_service import understand_query
+from services.query_understanding_service import is_small_talk_message, understand_query
 from vector_store.client import get_chroma_client
 
 
@@ -66,10 +67,21 @@ PRIORITY_KEYWORDS = {
     "cooling": {"tan nhiet", "mat may", "khong nong", "cooling"},
     "lightweight": {"nhe", "mong", "mong nhe", "gon", "lightweight"},
     "performance": {"hieu nang", "performance", "manh", "nhanh", "muot"},
+    "max_performance": {
+        "sieu manh",
+        "manh me",
+        "manh nhat",
+        "cau hinh sieu manh",
+        "khong quan tam gia",
+        "khong gioi han ngan sach",
+        "tat ca game nang",
+        "game nang hien tai",
+    },
     "durable": {"ben", "durable", "chac"},
     "build_quality": {"build", "vo kim loai", "hoan thien", "chat lieu", "cao cap"},
     "warranty": {"bao hanh", "chinh hang", "hau mai", "bao tri"},
     "software": {"phan mem", "cap nhat", "on dinh", "he sinh thai"},
+    "keyboard": {"ban phim", "keyboard", "go phim", "typing"},
     "value": {"re", "gia re", "value", "affordable", "hop ly", "gia thanh", "cau hinh", "p/p"},
     "china_brand": {"hang trung quoc", "trung quoc", "hang tq", "china brand", "hang china"},
     "student": {"hoc tap", "sinh vien", "student"},
@@ -106,6 +118,34 @@ CHINESE_VALUE_BRANDS = {
 
 APPLE_PLATFORM_DISLIKES = {"ios", "apple", "iphone", "ipad", "macos", "macbook"}
 
+VOLATILE_NEED_PRIORITIES = {
+    "ai_work",
+    "battery",
+    "build_quality",
+    "camera",
+    "coding",
+    "compact",
+    "cooling",
+    "creator",
+    "design",
+    "display",
+    "durable",
+    "gaming",
+    "lightweight",
+    "max_performance",
+    "office",
+    "performance",
+    "premium",
+    "ram",
+    "software",
+    "storage",
+    "student",
+    "upgradeable",
+    "value",
+    "warranty",
+    "keyboard",
+}
+
 BRAND_PRIORITY_ALIASES = {
     "apple": {"apple", "iphone", "macbook", "ipad"},
     "samsung": {"samsung", "galaxy"},
@@ -127,6 +167,30 @@ BRAND_PRIORITY_ALIASES = {
     "honor": {"honor"},
 }
 
+BRAND_CATEGORY_HINTS = {
+    "laptop": {
+        "acer",
+        "asus",
+        "dell",
+        "hp",
+        "lenovo",
+        "lg",
+        "microsoft",
+        "msi",
+    },
+    "phone": {
+        "google",
+        "honor",
+        "nothing",
+        "oneplus",
+        "oppo",
+        "realme",
+        "samsung",
+        "vivo",
+        "xiaomi",
+    },
+}
+
 STOPWORDS = {
     "a", "an", "and", "about", "around", "below", "budget", "cai", "can",
     "cho", "co", "de", "duoc", "duoi", "gia", "goi", "hon", "khoang",
@@ -141,6 +205,8 @@ def get_product_knowledge_context(
     db: Session,
 ) -> str:
     """Return prompt-safe product context, or an empty string if nothing is reliable."""
+    if is_small_talk_message(user_message):
+        return ""
 
     retrieval = _retrieve_products(user_message, session_id, db)
     if retrieval.get("needs_clarification"):
@@ -171,6 +237,8 @@ def get_grounded_product_answer(
     inventing stale product names. The LLM path remains available when product
     context is disabled or no product data is found.
     """
+    if is_small_talk_message(user_message):
+        return ""
 
     retrieval = _retrieve_products(user_message, session_id, db)
     if retrieval.get("needs_clarification"):
@@ -180,43 +248,12 @@ def get_grounded_product_answer(
     if not candidates:
         return ""
 
-    category = retrieval.get("category") or candidates[0].get("category")
-    budget_target = retrieval.get("budget_target")
-    budget_max = retrieval.get("budget_max")
-    query_tags = set(retrieval.get("priorities", []))
-    detailed_answer = True
-    answer_mode = retrieval.get("answer_mode", "broad")
-    group_limit = _candidate_group_limit(answer_mode, query_tags)
+    plan = build_answer_plan(retrieval, user_message=user_message)
+    answer = render_answer_plan(plan)
+    if answer:
+        return answer
 
-    lines = [_answer_heading(category, query_tags) + ":"]
-
-    best_pick = candidates[0]
-    lines.extend(_format_best_pick(best_pick, budget_target or budget_max, query_tags))
-
-    if answer_mode == "single_product":
-        lines.append(_checklist_for(category, query_tags))
-        return "\n".join(lines)
-
-    remaining = candidates[1:]
-    fits = [item for item in remaining if item.get("budget_status") == "fits"]
-    maybe = [item for item in remaining if item.get("budget_status") == "maybe"]
-    unknown = [item for item in remaining if item.get("budget_status") == "unknown"]
-
-    if budget_max and not fits and maybe:
-        lines.append(
-            f"Tôi chưa có mẫu nào chắc chắn dưới {_display_vnd(budget_max)} trong dữ liệu hiện có. "
-            "Các mẫu sau có thể chạm ngân sách ở cấu hình thấp hoặc khi giảm giá."
-        )
-
-    if fits:
-        lines.extend(_format_candidate_group("Phương án thay thế phù hợp ngân sách", fits, detailed_answer, group_limit))
-    if maybe:
-        lines.extend(_format_candidate_group("Có thể cân nhắc nếu săn sale/chọn cấu hình thấp", maybe, detailed_answer, group_limit))
-    if unknown:
-        lines.extend(_format_candidate_group("Ngoài hệ thống hoặc cần kiểm tra thêm", unknown, detailed_answer, group_limit))
-
-    lines.append(_checklist_for(category, query_tags))
-    return "\n".join(lines)
+    return ""
 
 
 def extract_product_keywords(user_message: str) -> List[str]:
@@ -246,7 +283,7 @@ def extract_product_keywords(user_message: str) -> List[str]:
         if any(_contains_alias(normalized, token) for token in tokens):
             keywords.append(priority)
 
-    budget_value = parse_budget(user_message)
+    budget_value = parse_budget(user_message) if _has_budget_signal(normalized) else None
     if budget_value is not None:
         keywords.append(f"budget:{int(budget_value)}")
 
@@ -362,34 +399,75 @@ def format_price(price: object) -> str:
 def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
     if not user_message or not user_message.strip():
         return {"candidates": []}
+    if is_small_talk_message(user_message):
+        return {"candidates": [], "answer_mode": "small_talk"}
 
     profile = db.query(CustomerProfile).filter(
         CustomerProfile.session_id == session_id
     ).first()
 
     parsed = understand_query(user_message)
+    unlimited_budget = _has_unlimited_budget_signal(user_message)
     keywords = extract_product_keywords(user_message)
     direct_category = parsed.get("category") or _detect_category_from_text(normalize_text(user_message))
     preferred_category = profile.preferred_category if profile else None
     category = parsed.get("category") or _resolve_category(user_message, keywords, preferred_category)
-    priorities = _extract_priorities(keywords, profile.priorities if profile else None)
-    priorities = unique_preserve_order(
-        priorities
+    memory_priorities = _extract_priorities([], profile.priorities if profile else None)
+    query_priorities = unique_preserve_order(
+        [kw for kw in keywords if kw in PRIORITY_KEYWORDS]
         + parsed.get("priorities", [])
         + parsed.get("preferred_brands", [])
         + parsed.get("preferred_os", [])
     )
+    priorities = _merge_turn_priorities(memory_priorities, query_priorities)
+    if unlimited_budget and "max_performance" not in priorities:
+        priorities.append("max_performance")
+    if (unlimited_budget or "max_performance" in parsed.get("priorities", [])) and not parsed.get("preferred_brands"):
+        # A fresh "best possible / no budget limit" request should not be
+        # constrained by an older remembered brand preference.
+        priorities = [
+            priority for priority in priorities
+            if not str(priority).startswith("brand:")
+            and priority not in {"value", "office", "student", "lightweight"}
+        ]
     dislikes = _extract_dislikes(getattr(profile, "dislikes", None) if profile else None)
+    recent_brand_dislikes = _extract_recent_brand_dislikes_for_alternative(
+        user_message=user_message,
+        session_id=session_id,
+        db=db,
+        category=category,
+    )
+    explicit_preferred_brands = {
+        item for item in parsed.get("preferred_brands", [])
+        if isinstance(item, str) and item.startswith("brand:")
+    }
+    if explicit_preferred_brands:
+        recent_brand_dislikes = [
+            item for item in recent_brand_dislikes
+            if item not in explicit_preferred_brands
+        ]
     dislikes = unique_preserve_order(
         dislikes
         + _extract_inline_dislikes(user_message)
+        + _extract_other_brand_dislikes(user_message)
+        + recent_brand_dislikes
         + parsed.get("dislikes", [])
         + parsed.get("disliked_brands", [])
+        + parsed.get("excluded_brands", [])
         + parsed.get("disliked_os", [])
     )
     priority_dislikes = {item for item in dislikes if item in PRIORITY_KEYWORDS}
     if priority_dislikes:
         priorities = [priority for priority in priorities if priority not in priority_dislikes]
+    disliked_brand_priorities = {
+        item for item in dislikes
+        if isinstance(item, str) and item.startswith("brand:")
+    }
+    if disliked_brand_priorities:
+        priorities = [
+            priority for priority in priorities
+            if priority not in disliked_brand_priorities
+        ]
 
     parsed_budget = parsed.get("budget") or {}
     query_budget = (
@@ -398,7 +476,12 @@ def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
         else _extract_budget_constraint(user_message)
     )
     memory_budget = _extract_budget_constraint(profile.budget if profile and profile.budget else "")
-    budget_constraint = query_budget if query_budget.get("target") or query_budget.get("max") else memory_budget
+    if unlimited_budget:
+        budget_constraint = {"min": None, "target": None, "max": None}
+    else:
+        if not (query_budget.get("target") or query_budget.get("max")) and _is_unrealistic_memory_budget(memory_budget, category):
+            memory_budget = {"min": None, "target": None, "max": None}
+        budget_constraint = query_budget if query_budget.get("target") or query_budget.get("max") else memory_budget
     budget_min = budget_constraint.get("min")
     budget_max = budget_constraint.get("max")
     budget_target = budget_constraint.get("target")
@@ -410,16 +493,19 @@ def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
             "candidates": [],
         }
 
-    exact_product_name = _detect_exact_product_name(user_message, category)
-    answer_mode = _answer_mode_from_query(user_message, priorities, exact_product_name)
+    exact_product_names = _detect_exact_product_names(user_message, category)
+    if not exact_product_names and not _is_alternative_request(user_message):
+        exact_product_names = _resolve_contextual_product_names(user_message, session_id, db, category)
+    exact_product_name = exact_product_names[0] if exact_product_names else None
+    answer_mode = _answer_mode_from_query(user_message, priorities, exact_product_name, exact_product_names)
 
     products = search_product_database(keywords=keywords, budget_max=None, category=category)
     brand_products = _preferred_brand_product_pool(priorities, category)
     if brand_products:
         products = brand_products
     products = _drop_disliked_products(products, dislikes)
-    if exact_product_name:
-        products = _filter_exact_product(products, exact_product_name)
+    if exact_product_names:
+        products = _filter_exact_products(products, exact_product_names)
     else:
         products = _filter_products_to_preferred_brands_when_possible(products, priorities)
     products = _apply_context_scoring(products, keywords, category, priorities)
@@ -462,6 +548,9 @@ def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
         )
         if brand_candidates:
             candidates = brand_candidates
+    if answer_mode == "comparison" and exact_product_names:
+        order = {normalize_text(name): index for index, name in enumerate(exact_product_names)}
+        candidates.sort(key=lambda item: order.get(normalize_text(item.get("name")), len(order)))
 
     return {
         "type": "hybrid_product_context",
@@ -472,6 +561,7 @@ def _retrieve_products(user_message: str, session_id: str, db: Session) -> Dict:
         "priorities": priorities,
         "answer_mode": answer_mode,
         "exact_product_name": exact_product_name,
+        "exact_product_names": exact_product_names,
         "notice": "Internal catalog/Chroma is preferred. External results must be verified.",
         "candidates": candidates[:7],
     }
@@ -615,12 +705,15 @@ def _normalize_product_records(products: List[Dict]) -> List[Dict]:
                 "brand": product.get("brand"),
                 "year": product.get("year"),
                 "price_segment": product.get("price_segment"),
+                "spec_snapshot": product.get("spec_snapshot", {}),
                 "specs": product.get("specs", {}),
                 "best_for": product.get("best_for", []),
                 "strengths": product.get("strengths", []),
                 "weaknesses": product.get("weaknesses", []),
                 "avoid_if": product.get("avoid_if", []),
                 "decision_notes": product.get("decision_notes", {}),
+                "detail_profile": product.get("detail_profile", {}),
+                "comparison_profile": product.get("comparison_profile", {}),
                 "last_updated": product.get("last_updated"),
                 "data_confidence": product.get("data_confidence"),
                 "relevance_score": float(product.get("relevance_score", 0.0) or 0.0),
@@ -659,6 +752,9 @@ def _detect_category_from_text(normalized: str) -> Optional[str]:
         return "laptop"
     if any(_contains_alias(normalized, token) for token in LAPTOP_WORK_SIGNALS):
         return "laptop"
+    brand_category = _infer_category_from_brand(normalized)
+    if brand_category:
+        return brand_category
 
     for category, tokens in CATEGORY_KEYWORDS.items():
         if category == "laptop":
@@ -682,6 +778,29 @@ def _extract_priorities(keywords: List[str], profile_priorities: Optional[str]) 
             if any(token in normalized for token in tokens):
                 priorities.append(priority)
     return unique_preserve_order(priorities)
+
+
+def _merge_turn_priorities(memory_priorities: List[str], query_priorities: List[str]) -> List[str]:
+    """Let explicit current-turn needs override older volatile memory needs.
+
+    Brand and OS preferences are long-lived. Use-case needs such as gaming,
+    camera, office, battery, or creator are more situational, so a fresh query
+    with explicit needs should not keep injecting stale needs from prior turns.
+    """
+
+    current_need_priorities = {
+        normalize_text(priority)
+        for priority in query_priorities
+        if normalize_text(priority) in VOLATILE_NEED_PRIORITIES
+    }
+    if not current_need_priorities:
+        return unique_preserve_order(memory_priorities + query_priorities)
+
+    stable_memory = [
+        priority for priority in memory_priorities
+        if normalize_text(priority) not in VOLATILE_NEED_PRIORITIES
+    ]
+    return unique_preserve_order(stable_memory + query_priorities)
 
 
 def _extract_dislikes(profile_dislikes: Optional[str]) -> List[str]:
@@ -738,6 +857,123 @@ def _extract_inline_dislikes(user_message: str) -> List[str]:
                 dislikes.append(priority)
 
     return unique_preserve_order(dislikes)
+
+
+def _extract_other_brand_dislikes(user_message: str) -> List[str]:
+    normalized = normalize_text(user_message)
+    if not normalized:
+        return []
+
+    other_brand_signals = [
+        "cac hang khac",
+        "hang khac",
+        "cac thuong hieu khac",
+        "thuong hieu khac",
+        "cac brand khac",
+        "brand khac",
+        "ngoai hang",
+        "ngoai brand",
+        "khac ngoai",
+        "ngoai",
+        "khong phai",
+        "doi hang",
+        "doi thuong hieu",
+    ]
+    owned_signals = [
+        "dang co",
+        "da co",
+        "co roi",
+        "dang dung",
+        "da dung",
+        "mua roi",
+        "xai roi",
+        "dung roi",
+        "tung dung",
+    ]
+    has_other_signal = any(_contains_alias(normalized, signal) for signal in other_brand_signals)
+    has_owned_signal = any(_contains_alias(normalized, signal) for signal in owned_signals)
+    if not has_other_signal:
+        return []
+
+    dislikes = []
+    for brand, aliases in BRAND_PRIORITY_ALIASES.items():
+        if not any(_contains_alias(normalized, alias) for alias in aliases):
+            continue
+        direct_exclusion = any(
+            _brand_alias_has_nearby_signal(normalized, alias, other_brand_signals)
+            for alias in aliases
+        )
+        if direct_exclusion or has_owned_signal:
+            dislikes.append(f"brand:{brand}")
+    return unique_preserve_order(dislikes)
+
+
+def _extract_recent_brand_dislikes_for_alternative(
+    user_message: str,
+    session_id: str,
+    db: Session,
+    category: Optional[str],
+) -> List[str]:
+    normalized = normalize_text(user_message)
+    if not normalized or not _is_alternative_request(user_message):
+        return []
+
+    brand_change_signals = [
+        "cac hang khac",
+        "hang khac",
+        "cac thuong hieu khac",
+        "thuong hieu khac",
+        "cac brand khac",
+        "brand khac",
+        "san pham cua hang khac",
+        "san pham hang khac",
+    ]
+    if not any(_contains_alias(normalized, signal) for signal in brand_change_signals):
+        return []
+
+    disliked_brands = []
+    for product_name in _recent_product_names(session_id, db, category=category, limit=8):
+        brand = _brand_from_recent_product_name(product_name)
+        if brand:
+            disliked_brands.append(f"brand:{brand}")
+    return unique_preserve_order(disliked_brands)
+
+
+def _brand_from_recent_product_name(product_name: str) -> str:
+    normalized_name = normalize_text(product_name)
+    if not normalized_name:
+        return ""
+
+    for item in _load_mini_catalog():
+        if normalize_text(item.get("name")) == normalized_name:
+            catalog_brand = normalize_text(item.get("brand"))
+            if catalog_brand:
+                for brand, aliases in BRAND_PRIORITY_ALIASES.items():
+                    if catalog_brand == brand or catalog_brand in aliases:
+                        return brand
+                return catalog_brand
+
+    for brand, aliases in BRAND_PRIORITY_ALIASES.items():
+        if any(_contains_alias(normalized_name, alias) for alias in aliases):
+            return brand
+    return ""
+
+
+def _brand_alias_has_nearby_signal(normalized: str, alias: str, signals: List[str]) -> bool:
+    tokens = normalized.split()
+    alias_tokens = alias.split()
+    if not tokens or not alias_tokens:
+        return False
+
+    for index in range(0, len(tokens) - len(alias_tokens) + 1):
+        if tokens[index : index + len(alias_tokens)] != alias_tokens:
+            continue
+        left = max(0, index - 5)
+        right = min(len(tokens), index + len(alias_tokens) + 5)
+        window = " ".join(tokens[left:right])
+        if any(_contains_alias(window, signal) for signal in signals):
+            return True
+    return False
 
 
 def _drop_disliked_products(products: List[Dict], dislikes: List[str]) -> List[Dict]:
@@ -844,6 +1080,8 @@ def _apply_context_scoring(
                 score += 0.5
 
         score += _core_need_alignment_score(tags, priorities)
+        if "max_performance" in _priority_set(priorities):
+            score += _max_performance_score(product)
 
         product["relevance_score"] = score
 
@@ -883,7 +1121,7 @@ def _score_product(product: Dict, keywords: Iterable[str], category: Optional[st
 def _core_need_alignment_score(tags: set, priorities: List[str]) -> float:
     """Reward products that match must-have needs and penalize mismatches."""
 
-    priority_set = {normalize_text(priority) for priority in priorities}
+    priority_set = _priority_set(priorities)
     score = 0.0
 
     if "gaming" in priority_set:
@@ -911,7 +1149,45 @@ def _core_need_alignment_score(tags: set, priorities: List[str]) -> float:
             score += 1.6
         else:
             score -= 1.0
+    if "max_performance" in priority_set:
+        if tags & {"gaming", "performance", "premium"}:
+            score += 5.0
+        else:
+            score -= 8.0
+        if "rtx" in tags:
+            score += 3.0
 
+    return score
+
+
+def _priority_set(priorities: Iterable[str]) -> set:
+    output = set()
+    for priority in priorities or []:
+        raw = str(priority)
+        output.add(raw)
+        output.add(normalize_text(raw))
+        output.add(normalize_text(raw).replace(" ", "_"))
+    return output
+
+
+def _max_performance_score(product: Dict) -> float:
+    name = normalize_text(product.get("name"))
+    tags = {normalize_text(tag) for tag in product.get("tags", [])}
+    score = 0.0
+    if "rtx 5090" in name:
+        score += 16.0
+    elif "rtx 4080" in name:
+        score += 13.0
+    elif "rtx 4070" in name:
+        score += 8.0
+    elif "rtx 4060" in name:
+        score += 3.0
+    if "premium" in tags:
+        score += 2.5
+    if "display" in tags:
+        score += 1.0
+    if "value" in tags:
+        score -= 2.0
     return score
 
 
@@ -919,6 +1195,8 @@ def _extract_budget_constraint(text: object) -> Dict[str, Optional[float]]:
     normalized = normalize_text(text)
     empty = {"min": None, "target": None, "max": None}
     if not normalized:
+        return empty
+    if _has_unlimited_budget_signal(normalized):
         return empty
     if not _has_budget_signal(normalized):
         return empty
@@ -950,6 +1228,39 @@ def _extract_budget_constraint(text: object) -> Dict[str, Optional[float]]:
         return {"min": target * 0.75, "target": target, "max": target * 1.25}
 
     return {"min": None, "target": target, "max": target}
+
+
+def _is_unrealistic_memory_budget(
+    budget_constraint: Dict[str, Optional[float]],
+    category: Optional[str],
+) -> bool:
+    max_budget = budget_constraint.get("max") or budget_constraint.get("target")
+    if not max_budget:
+        return False
+    if category == "laptop":
+        return max_budget < 5_000_000
+    if category == "phone":
+        return max_budget < 2_000_000
+    return False
+
+
+def _has_unlimited_budget_signal(text: object) -> bool:
+    normalized = normalize_text(text)
+    signals = [
+        "khong quan tam gia",
+        "khong quan tam ve gia",
+        "khong can quan tam ve gia",
+        "khong can quan tam gia",
+        "khong gioi han ngan sach",
+        "khong gioi han gia",
+        "bat ke gia",
+        "gia nao cung duoc",
+        "khong can biet gia",
+        "khong lo ve gia",
+        "no budget limit",
+        "unlimited budget",
+    ]
+    return any(_contains_alias(normalized, signal) for signal in signals)
 
 
 def _has_budget_signal(normalized: str) -> bool:
@@ -1010,6 +1321,15 @@ def _extract_explicit_budget_range(normalized: str) -> Optional[tuple[float, flo
         upper = _parse_budget_amount(second, second_unit or first_unit)
         if lower and upper:
             return (min(lower, upper), max(lower, upper))
+    return None
+
+
+def _infer_category_from_brand(normalized: str) -> Optional[str]:
+    for category, brands in BRAND_CATEGORY_HINTS.items():
+        for brand in brands:
+            aliases = BRAND_PRIORITY_ALIASES.get(brand, {brand})
+            if any(_contains_alias(normalized, alias) for alias in aliases):
+                return category
     return None
 
 
@@ -1103,10 +1423,9 @@ def _visible_candidates(
     unknown = [item for item in candidates if item.get("budget_status") == "unknown"]
 
     if fits:
-        # Prefer the requested price band. Add at most one cheaper option as a
-        # budget-saving alternative instead of flooding recommendations with
-        # much cheaper products.
-        return (fits[:5] + budget_saver[:1] + unknown[:1])[:6]
+        # Prefer the requested price band. Do not pad the answer with much
+        # cheaper "budget saver" products when enough in-band choices exist.
+        return fits[:6]
     if budget_saver:
         return (budget_saver + unknown)[:5]
     return unknown[:3]
@@ -1294,6 +1613,13 @@ def _is_alternative_request(user_message: str) -> bool:
         "phuong an khac",
         "goi y khac",
         "san pham khac",
+        "cac hang khac",
+        "hang khac",
+        "cac thuong hieu khac",
+        "thuong hieu khac",
+        "cac brand khac",
+        "brand khac",
+        "ngoai",
         "tot hon",
         "cao cap hon",
         "xung dang hon",
@@ -1328,6 +1654,15 @@ def _drop_recently_recommended_products(
 
 
 def _recently_recommended_product_names(session_id: str, db: Session) -> set:
+    return {normalize_text(name) for name in _recent_product_names(session_id, db, category=None, limit=4)}
+
+
+def _recent_product_names(
+    session_id: str,
+    db: Session,
+    category: Optional[str],
+    limit: int = 4,
+) -> List[str]:
     try:
         conversation = (
             db.query(Conversation)
@@ -1336,25 +1671,32 @@ def _recently_recommended_product_names(session_id: str, db: Session) -> set:
         )
         if not conversation:
             return set()
-        messages = (
+        message_query = (
             db.query(Message)
             .filter(Message.conversation_id == conversation.id)
             .filter(Message.role == "assistant")
-            .order_by(Message.id.desc())
-            .limit(4)
-            .all()
         )
+        try:
+            message_query = message_query.order_by(Message.id.desc())
+        except Exception:
+            pass
+        messages = message_query.limit(limit).all()
     except Exception:
-        return set()
+        return []
 
-    catalog_names = {normalize_text(item.get("name")) for item in _load_mini_catalog()}
-    found = set()
+    catalog_items = [
+        item for item in _load_mini_catalog()
+        if not category or normalize_text(item.get("category")) == category
+    ]
+    catalog_names = [(normalize_text(item.get("name")), item.get("name")) for item in catalog_items]
+    found = []
     for message in messages:
         content = normalize_text(getattr(message, "content", ""))
-        for name in catalog_names:
+        for normalized_name, display_name in catalog_names:
+            name = normalized_name
             if name and name in content:
-                found.add(name)
-    return found
+                found.append(display_name)
+    return unique_preserve_order(found)
 
 
 def _should_use_external_search(user_message: str, internal_candidates: List[Dict]) -> bool:
@@ -1420,9 +1762,14 @@ def _build_external_query(user_message: str, category: Optional[str], budget_max
 
 
 def _detect_exact_product_name(user_message: str, category: Optional[str]) -> Optional[str]:
+    names = _detect_exact_product_names(user_message, category)
+    return names[0] if names else None
+
+
+def _detect_exact_product_names(user_message: str, category: Optional[str]) -> List[str]:
     normalized = normalize_text(user_message)
     if not normalized:
-        return None
+        return []
 
     exact_signals = [
         "danh gia",
@@ -1434,6 +1781,10 @@ def _detect_exact_product_name(user_message: str, category: Optional[str]) -> Op
         "mau nay",
         "con nay",
         "ve",
+        "so sanh",
+        "nen chon",
+        "khac gi",
+        "vs",
     ]
     has_exact_signal = any(_contains_alias(normalized, signal) for signal in exact_signals)
 
@@ -1445,11 +1796,103 @@ def _detect_exact_product_name(user_message: str, category: Optional[str]) -> Op
         if name and _contains_alias(normalized, name):
             matches.append(item.get("name"))
 
+    if not matches:
+        matches = _detect_partial_product_names(user_message, category, has_exact_signal)
+
+    matches = unique_preserve_order(matches)
+    if len(matches) >= 2:
+        return sorted(matches, key=lambda name: normalized.find(normalize_text(name)))
     if len(matches) == 1:
-        return matches[0]
+        return matches
     if matches and has_exact_signal:
-        return max(matches, key=lambda name: len(normalize_text(name)))
-    return None
+        return [max(matches, key=lambda name: len(normalize_text(name)))]
+    return []
+
+
+def _detect_partial_product_names(
+    user_message: str,
+    category: Optional[str],
+    has_exact_signal: bool,
+) -> List[str]:
+    normalized = normalize_text(user_message)
+    if not normalized:
+        return []
+
+    # Partial resolution is only for product-specific questions. For broad
+    # recommendations, partial names like "Lenovo" should remain brand filters.
+    if not has_exact_signal and not _is_comparison_request(user_message):
+        return []
+
+    query_tokens = {
+        token for token in tokenize(normalized)
+        if token not in STOPWORDS and (len(token) >= 2 or re.search(r"\d", token))
+    }
+    query_numeric_tokens = {token for token in query_tokens if re.search(r"\d", token)}
+    if not query_tokens:
+        return []
+
+    scored = []
+    for item in _load_mini_catalog():
+        if category and normalize_text(item.get("category")) != category:
+            continue
+        name = normalize_text(item.get("name"))
+        name_tokens = [
+            token for token in tokenize(name)
+            if token not in STOPWORDS and (len(token) >= 2 or re.search(r"\d", token))
+        ]
+        if not name_tokens:
+            continue
+        if query_numeric_tokens and not query_numeric_tokens.issubset(set(name_tokens)):
+            continue
+        overlap = [token for token in name_tokens if token in query_tokens]
+        if len(overlap) < 2:
+            continue
+
+        # Important model markers such as RTX 4070 or Pro 5 should carry more
+        # weight than generic brand tokens.
+        weighted = 0
+        for token in overlap:
+            weighted += 2 if re.search(r"\d", token) or token in {"pro", "ultra", "rtx", "loq", "legion", "rog"} else 1
+        coverage = len(overlap) / max(len(name_tokens), 1)
+        score = weighted + coverage
+        if score >= 3.0:
+            scored.append((score, len(name), item.get("name")))
+
+    if not scored:
+        return []
+    scored.sort(reverse=True)
+    best_score = scored[0][0]
+    return [name for score, _length, name in scored if score >= best_score - 0.5][:3]
+
+
+def _resolve_contextual_product_names(
+    user_message: str,
+    session_id: str,
+    db: Session,
+    category: Optional[str],
+) -> List[str]:
+    normalized = normalize_text(user_message)
+    reference_signals = [
+        "san pham tren",
+        "mau tren",
+        "may tren",
+        "dien thoai tren",
+        "laptop tren",
+        "ban vua goi y",
+        "ban da goi y",
+        "mau do",
+        "may do",
+        "con do",
+        "no",
+        "cai nay",
+        "mau nay",
+        "san pham nay",
+    ]
+    if not any(_contains_alias(normalized, signal) for signal in reference_signals):
+        return []
+
+    recent = _recent_product_names(session_id, db, category=category, limit=6)
+    return recent[:1]
 
 
 def _filter_exact_product(products: List[Dict], product_name: str) -> List[Dict]:
@@ -1458,12 +1901,37 @@ def _filter_exact_product(products: List[Dict], product_name: str) -> List[Dict]
     return exact or products
 
 
+def _filter_exact_products(products: List[Dict], product_names: List[str]) -> List[Dict]:
+    normalized_names = [normalize_text(name) for name in product_names]
+    exact = []
+    for name in normalized_names:
+        exact.extend([item for item in products if normalize_text(item.get("name")) == name])
+    return _deduplicate_candidates(exact) or products
+
+
 def _answer_mode_from_query(
     user_message: str,
     priorities: List[str],
     exact_product_name: Optional[str],
+    exact_product_names: Optional[List[str]] = None,
 ) -> str:
+    if exact_product_names and len(exact_product_names) >= 2 and _is_comparison_request(user_message):
+        return "comparison"
     if exact_product_name:
+        normalized = normalize_text(user_message)
+        if any(_contains_alias(normalized, signal) for signal in [
+            "cau hinh",
+            "thong so",
+            "spec",
+            "specs",
+            "chi tiet",
+            "phan tich chi tiet",
+            "phan tich cau hinh",
+            "manh o diem nao",
+            "manh me o diem nao",
+            "cau hinh chi tiet",
+        ]):
+            return "spec_detail"
         return "single_product"
     if any(priority.startswith("brand:") for priority in priorities if isinstance(priority, str)):
         return "brand_constrained"
@@ -1471,6 +1939,36 @@ def _answer_mode_from_query(
     if any(_contains_alias(normalized, signal) for signal in ["mau nao", "goi y", "tu van", "lua chon"]):
         return "broad"
     return "focused"
+
+
+def _is_comparison_request(user_message: str) -> bool:
+    normalized = normalize_text(user_message)
+    raw = str(user_message or "").lower()
+    comparison_signals = [
+        "so sanh",
+        "so s nh",
+        "so sánh",
+        "khac gi",
+        "kh c gi",
+        "khác gì",
+        "nen chon",
+        "n n ch n",
+        "nên chọn",
+        "chon mau nao",
+        "mau nao tot hon",
+        "cai nao tot hon",
+        "t t h n",
+        "tốt hơn",
+        "hay hon",
+        "vs",
+        "voi",
+        "v i",
+        "với",
+    ]
+    return (
+        any(_contains_alias(normalized, normalize_text(signal)) for signal in comparison_signals)
+        or any(signal in raw for signal in comparison_signals if any(ord(ch) > 127 for ch in signal))
+    )
 
 
 def _format_candidate_group(
@@ -1481,13 +1979,12 @@ def _format_candidate_group(
 ) -> List[str]:
     lines = [f"\n{title}:"]
     for index, item in enumerate(candidates[:limit], 1):
-        source = item.get("source", "product_search")
         price = _display_vnd(item.get("price")) if item.get("price") is not None else "chưa rõ giá"
         description = _humanize_vi(item.get("description", ""))
         url = _source_url_for_item(item)
         if detailed_answer:
             lines.append(
-                f"{index}. {item.get('name', 'Unknown')} - {price} [{source}]\n"
+                f"{index}. {item.get('name', 'Unknown')} - {price}\n"
                 f"   - Hợp khi: {description}\n"
                 f"   - Điểm đáng chú ý: {_list_summary(item.get('strengths'), fallback='khớp nhu cầu chính')}.\n"
                 f"   - Cần cân nhắc: {_list_summary(item.get('weaknesses'), fallback='kiểm tra lại thông số theo phiên bản')}.\n"
@@ -1496,7 +1993,7 @@ def _format_candidate_group(
             )
         else:
             lines.append(
-                f"{index}. {item.get('name', 'Unknown')} - {price} [{source}]: {description}. "
+                f"{index}. {item.get('name', 'Unknown')} - {price}: {description}. "
                 f"Điểm mạnh: {_list_summary(item.get('strengths'), fallback='khớp nhu cầu chính')}. "
                 "Cần kiểm tra giá/cấu hình thực tế."
             )
@@ -1553,6 +2050,282 @@ def _format_best_pick(
     return lines
 
 
+def _format_product_detail_answer(item: Dict, category: Optional[str]) -> str:
+    name = item.get("name", "Sản phẩm")
+    price = _display_vnd(item.get("price")) if item.get("price") is not None else "chưa rõ giá"
+    detail = item.get("detail_profile") or {}
+    configuration = detail.get("configuration") if isinstance(detail, dict) else {}
+    performance = detail.get("performance_profile") if isinstance(detail, dict) else {}
+    advice = detail.get("buying_advice") if isinstance(detail, dict) else {}
+
+    lines = [
+        f"{name} - cấu hình/thông tin chính:",
+        "",
+        f"- Giá tham khảo trong catalog: {price}.",
+        f"- Vai trò sản phẩm: {_humanize_vi(detail.get('positioning') or item.get('description', ''))}",
+    ]
+
+    profile_config = configuration if isinstance(configuration, dict) else {}
+    specs = item.get("specs") or {}
+    if profile_config:
+        lines.append("- Cấu hình/tiêu chí cần xem theo đúng phiên bản:")
+        for key in _profile_config_keys_for_category(category):
+            value = profile_config.get(key)
+            if value:
+                lines.append(f"  - {_spec_label(key)}: {_humanize_vi(value)}.")
+    elif isinstance(specs, dict) and specs:
+        lines.append("- Cấu hình cần kiểm tra:")
+        for key in _spec_keys_for_category(category):
+            value = specs.get(key)
+            if value:
+                lines.append(f"  - {_spec_label(key)}: {_humanize_vi(value)}.")
+    else:
+        lines.append("- Catalog hiện chưa có cấu hình chi tiết theo từng phiên bản.")
+
+    if isinstance(performance, dict) and performance:
+        lines.append("- Nhận xét theo nhu cầu:")
+        for key, value in list(performance.items())[:5]:
+            if value:
+                lines.append(f"  - {_spec_label(key)}: {_humanize_vi(value)}.")
+
+    if isinstance(advice, dict) and advice:
+        choose_if = _list_summary(advice.get("choose_if"), fallback="")
+        avoid_if = _list_summary(advice.get("avoid_if"), fallback="")
+        verify = _list_summary(advice.get("verify"), fallback="")
+        if choose_if:
+            lines.append(f"- Nên chọn nếu: {choose_if}.")
+        if avoid_if:
+            lines.append(f"- Nên bỏ qua nếu: {avoid_if}.")
+        if verify:
+            lines.append(f"- Cần kiểm tra thêm: {verify}.")
+
+    lines.extend(
+        [
+            f"- Điểm mạnh: {_list_summary(item.get('strengths'), fallback='phù hợp nhu cầu chính')}.",
+            f"- Cần cân nhắc: {_list_summary(item.get('weaknesses'), fallback='kiểm tra đúng phiên bản trước khi mua')}.",
+            f"- Link kiểm tra nhanh: {_source_url_for_item(item)}",
+            "Lưu ý: catalog demo dùng để tư vấn và so sánh hướng mua; trước khi mua vẫn nên đối chiếu đúng mã cấu hình, giá và bảo hành tại cửa hàng.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_comparison_answer(candidates: List[Dict], category: Optional[str], query_tags: set) -> str:
+    items = candidates[:3]
+    if len(items) < 2:
+        return _format_product_detail_answer(items[0], category) if items else ""
+
+    winner = _choose_comparison_winner(items, query_tags, category)
+    priority_text = ", ".join(_tag_label(tag) for tag in sorted(query_tags)[:3]) or "nhu cầu tổng thể"
+    winner_name = winner.get("name") if winner else items[0].get("name")
+
+    lines = [
+        f"Nếu xét theo {priority_text}, mình nghiêng về {winner_name}.",
+        "Hai mẫu này không nên so kiểu chỉ nhìn giá, vì chúng thường phục vụ hơi khác nhau:",
+    ]
+
+    for item in items:
+        price = _display_vnd(item.get("price")) if item.get("price") is not None else "chưa rõ giá"
+        lines.append(
+            f"- {item.get('name', 'Unknown')} ({price}): {_comparison_role_sentence(item, category, query_tags)}"
+        )
+
+    lines.append("Điểm khác biệt đáng chú ý:")
+    for sentence in _comparison_takeaways(items, category, query_tags):
+        lines.append(f"- {sentence}")
+
+    if winner:
+        lines.append(
+            f"Kết luận: chọn {winner.get('name')} nếu bạn muốn phương án hợp nhất với {priority_text}. "
+            "Chỉ đổi sang mẫu còn lại nếu các điểm mạnh riêng của nó quan trọng hơn với bạn."
+        )
+
+    lines.append(_checklist_for(category, query_tags))
+    return "\n".join(lines)
+
+
+def _comparison_role_sentence(item: Dict, category: Optional[str], query_tags: set) -> str:
+    custom_role = _custom_comparison_role(item, category, query_tags)
+    if custom_role:
+        return custom_role
+
+    detail = item.get("detail_profile") or {}
+    role = _humanize_vi(detail.get("positioning") or item.get("description", ""))
+    strengths = _strength_summary_for_query(item, query_tags)
+    tradeoff = _list_summary(item.get("weaknesses"), fallback="cần kiểm tra đúng cấu hình và giá bán")
+    return f"hợp khi {role}; điểm mạnh là {strengths}; đổi lại {tradeoff}."
+
+
+def _custom_comparison_role(item: Dict, category: Optional[str], query_tags: set) -> str:
+    if category != "laptop":
+        return ""
+
+    name = normalize_text(item.get("name"))
+    tags = {normalize_text(tag) for tag in item.get("tags", [])}
+    if "loq" in name and "rtx" in tags:
+        return (
+            "hợp hơn nếu bạn ưu tiên hiệu năng/giá, chơi game và tác vụ đồ họa trong ngân sách hợp lý; "
+            "điểm cần kiểm tra là đúng GPU, TGP, RAM/SSD và chất lượng màn hình theo từng cấu hình."
+        )
+    if "zephyrus g14" in name:
+        return (
+            "hợp hơn nếu bạn muốn máy cao cấp, gọn hơn laptop gaming phổ thông và vẫn cần hiệu năng mạnh; "
+            "đổi lại giá cao hơn, cấu hình GPU cụ thể và khả năng nâng cấp phải kiểm tra rất kỹ."
+        )
+    if "legion" in name:
+        return (
+            "hợp nếu bạn ưu tiên hiệu năng duy trì, tản nhiệt và trải nghiệm gaming nghiêm túc; "
+            "đổi lại máy thường nặng hơn và pin không phải ưu tiên chính."
+        )
+    if "zenbook" in name or "yoga" in name or "x1 carbon" in name:
+        return (
+            "hợp nếu bạn ưu tiên mỏng nhẹ, pin và màn hình cho làm việc hằng ngày; "
+            "không phải lựa chọn chính nếu mục tiêu là game nặng hoặc GPU mạnh."
+        )
+    return ""
+
+
+def _comparison_takeaways(items: List[Dict], category: Optional[str], query_tags: set) -> List[str]:
+    takeaways = []
+    if len(items) < 2:
+        return takeaways
+
+    first, second = items[0], items[1]
+    first_price = first.get("price")
+    second_price = second.get("price")
+    if first_price is not None and second_price is not None:
+        try:
+            gap = abs(float(first_price) - float(second_price))
+            if gap >= 5_000_000:
+                cheaper = first if float(first_price) < float(second_price) else second
+                pricier = second if cheaper is first else first
+                takeaways.append(
+                    f"{cheaper.get('name')} có lợi thế giá; {pricier.get('name')} chỉ đáng trả thêm nếu bạn thật sự cần các điểm mạnh riêng của nó."
+                )
+        except (TypeError, ValueError):
+            pass
+
+    for criterion in _comparison_keys_for_category(category)[:4]:
+        values = []
+        for item in items[:2]:
+            profile = item.get("comparison_profile") or {}
+            value = profile.get(criterion)
+            if value:
+                values.append(f"{item.get('name')}: {_humanize_vi(value)}")
+        if len(values) == 2:
+            takeaways.append(f"{_spec_label(criterion)} - {values[0]}; {values[1]}.")
+
+    if not takeaways:
+        takeaways.append("Cả hai đều cần kiểm tra đúng cấu hình bán ra, vì cùng tên sản phẩm có thể có nhiều phiên bản.")
+    return takeaways[:5]
+
+
+def should_use_llm_grounded_rewrite(user_message: str, session_id: str, db: Session) -> bool:
+    """
+    Return True for product answers where template facts are useful but the
+    final response needs natural reasoning, such as comparisons and deep dives.
+    """
+
+    if not settings.ENABLE_LLM_GROUNDED_REWRITE:
+        return False
+    retrieval = _retrieve_products(user_message, session_id, db)
+    answer_mode = retrieval.get("answer_mode")
+    if answer_mode == "comparison":
+        # Comparisons must keep every named product and criterion. Local rewrite
+        # models have sometimes collapsed the answer to one product, so the
+        # grounded comparison renderer is safer for the demo.
+        return False
+    if answer_mode in {"spec_detail", "single_product"}:
+        return True
+
+    normalized = normalize_text(user_message)
+    reasoning_signals = [
+        "so sanh",
+        "nen chon",
+        "co nen mua",
+        "danh gia",
+        "khac gi",
+        "tot hon",
+        "phu hop hon",
+        "phan tich",
+    ]
+    return any(_contains_alias(normalized, signal) for signal in reasoning_signals)
+
+
+def _choose_comparison_winner(items: List[Dict], query_tags: set, category: Optional[str]) -> Optional[Dict]:
+    if not items:
+        return None
+
+    def score(item: Dict) -> float:
+        tags = {normalize_text(tag) for tag in item.get("tags", [])}
+        name = normalize_text(item.get("name"))
+        value = item.get("relevance_score", 0.0) or 0.0
+        value += len(tags & query_tags) * 5
+        if {"gaming", "creator", "performance"} & query_tags:
+            if "rtx" in tags:
+                value += 4
+            if "rtx 4060" in name or "rtx 4070" in name:
+                value += 3
+            if "lightweight" in tags and "gaming" in query_tags:
+                value -= 1
+        price = item.get("price")
+        if price is not None:
+            try:
+                price_value = float(price)
+                if category == "phone" and price_value >= 15_000_000:
+                    value += 1
+                if category == "laptop" and price_value >= 18_000_000:
+                    value += 1
+                if "value" in tags and category == "laptop":
+                    value += 2
+            except (TypeError, ValueError):
+                pass
+        return value
+
+    return max(items, key=score)
+
+
+def _comparison_keys_for_category(category: Optional[str]) -> List[str]:
+    if category == "phone":
+        return ["performance", "gaming", "display", "battery", "camera", "software", "value", "risk"]
+    if category == "laptop":
+        return ["cpu", "gpu", "ram_storage", "display", "thermal", "portability_battery", "upgrade", "value"]
+    return ["performance", "display", "battery", "value"]
+
+
+def _profile_config_keys_for_category(category: Optional[str]) -> List[str]:
+    if category == "phone":
+        return ["chipset_tier", "ram_storage", "display", "battery_charging", "camera", "cooling", "software"]
+    if category == "laptop":
+        return ["cpu_class", "gpu_class", "ram", "storage", "display", "thermal", "portability", "battery", "upgrade_notes"]
+    return []
+
+
+def _spec_keys_for_category(category: Optional[str]) -> List[str]:
+    if category == "phone":
+        return ["chipset", "ram_storage", "screen", "battery", "camera", "software"]
+    if category == "laptop":
+        return ["cpu", "gpu", "ram", "storage", "screen", "portability", "battery"]
+    return []
+
+
+def _spec_label(key: str) -> str:
+    labels = {
+        "chipset": "Chipset",
+        "ram_storage": "RAM/bộ nhớ",
+        "screen": "Màn hình",
+        "battery": "Pin",
+        "camera": "Camera",
+        "software": "Phần mềm",
+        "cpu": "CPU",
+        "gpu": "GPU",
+        "ram": "RAM",
+        "storage": "Lưu trữ",
+        "portability": "Thiết kế/di động",
+    }
+    return labels.get(key, key)
+
+
 def _source_url_for_item(item: Dict) -> str:
     """
     Return a user-clickable verification URL.
@@ -1599,6 +2372,25 @@ def _strength_summary_for_query(item: Dict, query_tags: set) -> str:
 
 
 def _spec_summary(item: Dict) -> str:
+    snapshot = item.get("spec_snapshot") or {}
+    if isinstance(snapshot, dict) and snapshot:
+        category = normalize_text(item.get("category"))
+        if category == "phone":
+            keys = ["chipset", "ram", "storage", "display", "battery", "charging", "camera", "os"]
+        elif category == "laptop":
+            keys = ["cpu", "gpu", "ram", "storage", "display", "battery", "weight", "os"]
+        else:
+            keys = list(snapshot.keys())
+
+        parts = []
+        for key in keys:
+            value = snapshot.get(key)
+            if value:
+                label = _spec_label(key)
+                parts.append(f"{label}: {_humanize_vi(value)}")
+        if parts:
+            return "; ".join(parts[:6])
+
     specs = item.get("specs") or {}
     if not isinstance(specs, dict) or not specs:
         return "chưa có thông số chi tiết trong catalog demo"
@@ -1623,16 +2415,35 @@ def _spec_summary(item: Dict) -> str:
 def _spec_label(key: str) -> str:
     labels = {
         "ram_storage": "RAM/bộ nhớ",
+        "chipset_tier": "Chip/hiệu năng",
+        "battery_charging": "Pin/sạc",
+        "cpu_class": "CPU",
+        "gpu_class": "GPU",
+        "thermal": "Tản nhiệt/độ ồn",
+        "upgrade_notes": "Khả năng nâng cấp",
+        "performance": "Hiệu năng",
+        "gaming": "Chơi game",
+        "office": "Văn phòng",
+        "creator": "Đồ họa/sáng tạo",
+        "coding": "Lập trình",
+        "value": "Giá trị/giá bán",
+        "risk": "Điểm cần kiểm tra",
+        "portability_battery": "Di động/pin",
+        "upgrade": "Nâng cấp",
         "cpu": "CPU",
         "gpu": "GPU",
         "ram": "RAM",
-        "storage": "lưu trữ",
-        "screen": "màn hình",
-        "battery": "pin",
-        "camera": "camera",
-        "software": "phần mềm",
-        "chipset": "chipset",
-        "portability": "tính di động",
+        "storage": "Lưu trữ",
+        "screen": "Màn hình",
+        "display": "Màn hình",
+        "battery": "Pin",
+        "camera": "Camera",
+        "software": "Phần mềm",
+        "chipset": "Chipset",
+        "charging": "Sạc",
+        "os": "Hệ điều hành",
+        "weight": "Cân nặng",
+        "portability": "Tính di động",
     }
     return labels.get(key, key.replace("_", " "))
 
@@ -1687,6 +2498,8 @@ def _humanize_vi(value: object) -> str:
         "giua": "giữa",
         "vua": "vừa",
         "dung hang ngay": "dùng hằng ngày",
+        "dung lượng": "dung lượng",
+        "dung luong": "dung lượng",
         "dung ma": "đúng mã",
         "dùng ma": "đúng mã",
         "dung": "dùng",
@@ -1972,10 +2785,12 @@ def _product_haystack(product: Dict) -> str:
     avoid_if = " ".join(str(item) for item in product.get("avoid_if", []))
     specs = product.get("specs") or {}
     specs_text = " ".join(str(value) for value in specs.values()) if isinstance(specs, dict) else str(specs)
+    snapshot = product.get("spec_snapshot") or {}
+    snapshot_text = " ".join(str(value) for value in snapshot.values()) if isinstance(snapshot, dict) else str(snapshot)
     return normalize_text(
         f"{product.get('name', '')} {product.get('description', '')} "
         f"{product.get('category', '')} {product.get('brand', '')} "
-        f"{tags} {best_for} {strengths} {weaknesses} {avoid_if} {specs_text}"
+        f"{tags} {best_for} {strengths} {weaknesses} {avoid_if} {specs_text} {snapshot_text}"
     )
 
 

@@ -49,6 +49,8 @@ async def health_check():
         "status": "ok",
         "provider": settings.LLM_PROVIDER,
         "active_model": settings.active_model,
+        "rewrite_model": settings.OLLAMA_REWRITE_MODEL,
+        "casual_model": settings.OLLAMA_CASUAL_MODEL,
         "ollama_reachable": False,
         "configured_model_exists": False,
         "experiments": {
@@ -56,6 +58,9 @@ async def health_check():
             "enable_recent_context": settings.ENABLE_RECENT_CONTEXT,
             "enable_product_context": settings.ENABLE_PRODUCT_CONTEXT,
             "enable_grounded_product_answer": settings.ENABLE_GROUNDED_PRODUCT_ANSWER,
+            "enable_llm_grounded_rewrite": settings.ENABLE_LLM_GROUNDED_REWRITE,
+            "enable_llm_clarification": settings.ENABLE_LLM_CLARIFICATION,
+            "enable_llm_casual_chat": settings.ENABLE_LLM_CASUAL_CHAT,
             "enable_external_product_search": settings.ENABLE_EXTERNAL_PRODUCT_SEARCH,
         }
     }
@@ -96,6 +101,9 @@ async def change_experiment(request: ExperimentRequest):
             "enable_memory": settings.ENABLE_MEMORY,
             "enable_recent_context": settings.ENABLE_RECENT_CONTEXT,
             "enable_product_context": settings.ENABLE_PRODUCT_CONTEXT,
+            "enable_llm_grounded_rewrite": settings.ENABLE_LLM_GROUNDED_REWRITE,
+            "enable_llm_clarification": settings.ENABLE_LLM_CLARIFICATION,
+            "enable_llm_casual_chat": settings.ENABLE_LLM_CASUAL_CHAT,
         },
     }
 
