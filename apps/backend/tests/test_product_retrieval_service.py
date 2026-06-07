@@ -806,6 +806,30 @@ class ProductRetrievalServiceTests(TestCase):
         self.assertTrue(any(name in answer for name in ["Realme", "iQOO", "OnePlus", "Samsung", "Honor"]))
 
     @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
+    def test_explicit_xiaomi_poco_request_overrides_old_brand_memory(self, _mock_client):
+        from models.database_models import CustomerProfile
+
+        profile = CustomerProfile(
+            session_id="user-1",
+            budget="tam 30 trieu",
+            preferred_category="phone",
+            priorities="gaming, battery, brand:samsung",
+        )
+
+        answer = get_grounded_product_answer(
+            user_message="cho toi mot vai mau dien thoai Xiaomi/Poco trong tam gia 30 trieu",
+            session_id="user-1",
+            db=FakeDB(profile),
+        )
+
+        first_choice_line = next(
+            line for line in answer.splitlines()
+            if line.startswith("Mình sẽ ưu tiên:") or line.startswith("MÃ¬nh sáº½ Æ°u tiÃªn:")
+        )
+        self.assertTrue(any(name in first_choice_line for name in ["Xiaomi", "POCO", "Redmi"]))
+        self.assertNotIn("Samsung", first_choice_line)
+
+    @patch("services.product_retrieval_service.get_chroma_client", return_value=None)
     def test_memory_category_guides_vague_budget_follow_up(self, _mock_client):
         from models.database_models import CustomerProfile
 
